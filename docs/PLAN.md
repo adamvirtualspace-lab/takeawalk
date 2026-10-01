@@ -66,6 +66,21 @@ Risks:
   first; use an ini file and console messages.
 - Plugins are blocked in TruckersMP and may be restricted in Convoy.
 
+## Phase 2b: third person (optional, after first person works)
+
+Depends on phase 2.2-2.4. See RESEARCH.md section 4b.
+
+| Milestone | Content |
+|---|---|
+| 2b.1 Spike | In a disassembler, find how the engine instantiates a mover / animated model actor. Go/no-go for the whole phase |
+| 2b.2 Static body | Spawn a game NPC model at the player position and move it with the player |
+| 2b.3 Animation | Switch between idle and walk clips, scale playback to movement speed |
+| 2b.4 Camera | Orbit camera behind the character, toggle first/third person |
+| 2b.5 Custom character | Own model and clips (run, crouch, jump) via SCS Blender Tools, if game NPC clips are not enough |
+
+Start with a game NPC (`meso` skeleton, existing walk and idle clips) so no art is
+needed until 2b.5. If 2b.1 fails, the fallback is first person with a body shadow only.
+
 ## Phase 3: release
 
 - Pack the data mod as `.scs` (zip, no `.git`, no `docs/`, no `plugin/`).

@@ -109,6 +109,59 @@ docs) or **[reported]** (from third-party pages, not checked here).
    promising shortcut and are unexplored by the mods above. Worth testing before
    writing any code.
 
+## 4b. Third-person walking
+
+Third person needs two things: a character asset, and a way to put it in the world
+under player control. The first is easy; the second is the real problem.
+
+### The character asset
+
+**Reuse game NPCs [verified from `def.scs`]**
+
+- Pedestrians are "movers": skinned `.pmd` models plus `.pma` animations, defined in
+  `/def/world/mover*.sii` (`mover_desc`, `mover_anim`, `mover_anim_props`,
+  `mover_model_group`).
+- Human animations shipped with the game include
+  `/asset/animation/man/meso_walking_01.pma`, `reduced_walking_01.pma`,
+  `/asset/animation/woman/meso_walking_01.pma`, `meso_walking_02.pma`, and standing
+  idles such as `meso_standing_idle_01..05.pma`. I found walking and idle clips but
+  **no human run, jump or crouch clips**.
+- Models and animations are matched by tags because there are several skeleton
+  families (`meso`, `reduced`, newer `ngn`); an animation only works on its own
+  skeleton.
+- Driver models also exist (`/vehicle/driver/ai_0.pmd` ... `ai_11.pmd`), posed for
+  sitting.
+- These assets are SCS's. Referencing them by path from a mod is fine; copying them
+  into the mod is redistribution.
+
+**Import a custom skeletal mesh [reported, SCS wiki + Steam guide]**
+
+- SCS Blender Tools export armature + skinned mesh + actions as PIM/PIS/PIA; SCS
+  Conversion Tools turn them into `.pmd`/`.pmg`/`.pma`.
+- Only bone location/rotation/scale keys are exported (no shape keys, no IK at runtime).
+- Limits quoted by a community guide: 255 bones, 65,535 vertices per object, 60 s per
+  animation.
+- A custom character lets us author the missing run/crouch/jump clips.
+
+### Getting it into the world
+
+| Route | How | Verdict |
+|---|---|---|
+| Mover on the map | Placed in the map editor, loops along a fixed path | Not player-controlled |
+| Mover on a truck locator (the "animated passenger" trick) | Accessory locator hosts a mover | Glued to the truck, loops one clip. Not controllable |
+| `animated_model_data` | Model + animation with `trigger_distance_sq`, `one_shot` (garage doors, tow scene) | Fixed position, trigger-only |
+| Character as a drivable "vehicle" | A truck definition whose model is a person; chase camera gives third person and vehicle physics gives collision | Untested idea. No way to swap vehicles on the spot from data, and animation would not follow speed |
+| Plugin spawns and drives an engine actor | Reverse-engineer how the engine creates a model/mover actor, then set its placement and animation each frame | The real solution. Hardest reverse-engineering task in the project |
+| Plugin renders its own mesh | Hook the renderer and draw a skinned mesh ourselves | Lighting/shadows will not match; depends on renderer (this install has run both `gl` and `dx11`) |
+
+Conclusion: no data-only route gives a controllable character. Third person depends
+on the plugin, and on one specific unknown: creating and animating an engine actor
+from plugin code. Once the plugin already owns the camera, the third-person camera
+itself (orbit behind the character) is simple.
+
+No existing walking mod I found advertises third person; TM Real Walk is first person
+with a ground shadow and a hand-held flashlight. **[reported]**
+
 ## 5. Local environment
 
 - Game: `E:\home\adam\.local\share\Steam\steamapps\common\Euro Truck Simulator 2`
@@ -127,6 +180,9 @@ docs) or **[reported]** (from third-party pages, not checked here).
 - https://modding.scssoft.com/wiki/Documentation/Engine/Mod_manager
 - https://modding.scssoft.com/wiki/Documentation/Engine/Game_data
 - https://modding.scssoft.com/wiki/Documentation/Engine/SDK/Telemetry
+- https://modding.scssoft.com/wiki/Documentation/Engine/Mover_model_group
+- https://modding.scssoft.com/wiki/Documentation/Tools/SCS_Blender_Tools/Animation_system
+- https://steamcommunity.com/sharedfiles/filedetails/?id=2990446757
 - https://github.com/Baldywaldy09/ETS2MobileCam
 - https://github.com/sk-zk/Extractor
 - https://www.ets2world.com/tm-real-walk-plugin-v1-0-1-61-ets2/
