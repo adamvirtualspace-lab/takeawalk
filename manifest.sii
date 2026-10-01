@@ -1,0 +1,16 @@
+SiiNunit
+{
+mod_package : .takeawalk
+{
+	package_version: "0.1"
+	display_name: "Take a Walk"
+	author: "adamvirtualspace-lab"
+
+	category[]: "other"
+
+	icon: "icon.jpg"
+	description_file: "description.txt"
+
+	compatible_versions[]: "1.61.*"
+}
+}

@@ -73,7 +73,12 @@ docs) or **[reported]** (from third-party pages, not checked here).
   interior_*, top, tv, wander, wheel, window. Each truck's `accessory_truck_data`
   references its cameras (`interior_camera: camera.interior.daf.xf`,
   `debug_camera: camera.debug`, ...).
-- Photo camera definition (`photo_camera: camera.photo.basic`), fully moddable:
+- The dealer/workshop scenes (`ui_truck_scene_config` in `/def/truck_*_scene.sii`)
+  only configure an orbit camera and the showroom model; they hold no walk settings.
+  Together with the missing `walking_camera` def, this means the built-in walking
+  camera is set up in code and cannot be enabled in the world from a data mod.
+- Photo camera definition (`photo_camera: camera.photo.basic` in
+  `/def/photo_camera_data.sii`), fully moddable:
 
   ```
   validation: true          # collision check against the world

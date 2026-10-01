@@ -1,0 +1,8 @@
+[orange]Take a Walk[normal]
+
+Get out of the truck and look around on foot.
+
+Version 0.1 (experimental): extends photo mode so the camera can travel much
+further from the truck at walking speed, still blocked by world collision.
+
+Open photo mode and move the camera to walk.

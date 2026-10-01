@@ -1,0 +1,48 @@
+SiiNunit
+{
+photo_camera: camera.photo.basic
+{
+	camera_fov: 60
+	mouse_sensitivity: 0.12
+
+  validation: true
+	validation_radius: 0.6
+  max_distance: 300	# takeawalk: was 40
+  max_height: 7
+  fly_speed: 2.0	# takeawalk: was 3.5
+
+  fov_min: 20
+  fov_max: 100
+  fov_step: 75
+  fov_default: 60
+
+  dof_filter_size_min: 0
+  dof_filter_size_max: 2.6
+  dof_filter_size_default: 1.7
+
+  # exponential slider
+  dof_start_min: 1
+  dof_start_max: 400
+  dof_start_default: 20
+  dof_start_steepnes: 5 # bigger number means steeper function, recommended values [3, 5],
+
+  dof_transition_min: 1
+  dof_transition_max: 50
+  dof_transition_default: 25
+
+  cc_saturation_min: 0
+  cc_saturation_max: 1.4
+
+  cc_cyan_red_min: -0.2
+  cc_cyan_red_max: 0.2
+
+  cc_magenta_green_min: -0.2
+  cc_magenta_green_max: 0.2
+
+  cc_yellow_blue_min: -0.2
+  cc_yellow_blue_max: 0.2
+
+  roll_angle_limit: 35.0
+  roll_step: 15.0
+}
+}

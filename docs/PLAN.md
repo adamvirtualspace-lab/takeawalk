@@ -24,9 +24,9 @@ Each one answers a question that shapes the later phases.
 | 0.1 | Set `g_developer "1"` and `g_console "1"` in `config.cfg`; try free camera (`0`) | Baseline feel; confirms dev camera works on this install |
 | 0.2 | Open photo mode in 1.61 and look for a walk toggle (the `.ui.photomode.walk` context) | Does 1.61 photo mode already have on-foot movement with collision? |
 | 0.3 | Walk around the truck at a dealer/workshop | How does the built-in `walking_camera` feel: speed, crouch, collision? |
-| 0.4 | Override `/def/photo...` photo camera: `max_distance`, `max_height`, `fly_speed`, `validation` | How far can a data mod push photo mode toward walking? |
-| 0.5 | Install an `.scs` extractor and extract `/def` and `/ui` fully | Find where `walking_camera` is defined and referenced |
-| 0.6 | Put `walking_camera` entries in `camera_storage.takeawalk.sii` / truck data and see what the log says | Can the engine's walking camera be selected in the world from a data mod? |
+| 0.4 | Enable this mod (it overrides `/def/photo_camera_data.sii`: `max_distance` 40 -> 300, `fly_speed` 3.5 -> 2.0) and open photo mode | How far can a data mod push photo mode toward walking? Does `max_height` measure from the ground or the truck? |
+| 0.5 | Install an `.scs` extractor and extract `/def` and `/ui` fully | Confirm the findings below against the full file tree |
+| 0.6 | ~~Enable `walking_camera` in the world from data~~ | Answered from the files: no `walking_camera` def exists and the dealer scenes carry no walk settings, so it is code-driven. Outcome A is ruled out |
 
 Outcome: a short write-up in `docs/` saying which of A/B/C below applies.
 
