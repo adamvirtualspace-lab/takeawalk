@@ -1,0 +1,12 @@
+# extracted game data (copyrighted, do not commit)
+/extracted/
+
+# plugin build output
+/plugin/build/
+*.dll
+*.pdb
+*.obj
+
+# packed releases
+*.scs
+*.zip
