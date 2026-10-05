@@ -54,6 +54,32 @@ docs) or **[reported]** (from third-party pages, not checked here).
   restarting the game. **[reported, SDK readme]**
 - Anything beyond telemetry/input needs reverse-engineered game memory, which breaks
   on game updates.
+- Plugins are also loaded from paths listed under
+  `HKLM\SOFTWARE\SCS Software\Euro Truck Simulator 2\Plugins`. All SDK calls happen
+  on the main thread only. The SDK headers are MIT-style licensed (`sdk_license.txt`),
+  so they can be vendored and redistributed. **[verified, `plugin/third_party/scs_sdk`]**
+
+### How open is ETS2 modding, layer by layer
+
+Checked 2026-10-05 against the SCS modding wiki and the vendored SDK.
+
+| Layer | Official support | Openness |
+|---|---|---|
+| Assets (models, textures, animations) | SCS Blender Tools + Conversion Tools, documented formats | Open. Blender Tools are open source |
+| Definitions (`.sii` units: trucks, cameras, economy, ...) | Documented on the wiki, overlay through the mod manager | Open, but limited to units the engine already implements |
+| Map | Official Map Editor | Open for map mods |
+| Sound | FMOD Studio project template | Open |
+| Archives | Game Archive Extractor, Workshop Uploader | Open |
+| Game logic / scripting | None. No scripting language exists | Closed |
+| Plugin API (SDK) | Telemetry (read) + input devices (write) | Narrow: no camera, world, physics, rendering or UI access |
+| Everything else (camera, collision, actors, UI) | None | Reverse engineering only |
+
+**[reported, SCS modding wiki: documentation index lists tools, engine docs and
+the Telemetry SDK, and nothing on scripting or a wider plugin API]**
+
+So SCS is open for content and closed for behaviour. The SDK is deliberately small.
+Community frameworks (section 6, SPF-Framework) fill the gap by reverse engineering, the way SKSE and
+CommonLib do for Skyrim, but on a much smaller scale.
 
 ## 2. What the engine already has for walking **[verified from `eurotrucks2.exe` strings and `def.scs`]**
 
@@ -102,6 +128,7 @@ docs) or **[reported]** (from third-party pages, not checked here).
 | ETS2MobileCam (Baldywaldy09) | plugin DLL, C++/CMake/MSVC, open source | Overwrites the free camera's placement every tick via reverse-engineered `camera_manager_u`/`core_camera_u`; patches the camera tick so the engine does not overwrite it; raw mouse input | No ground/collision handling described **[reported]** |
 | Roextended "Walk Around Truck" | `.scs` + edited `controls.sii`/`config_local.cfg` | Abuses eye/head-tracking presets to offset the head along fixed paths around the truck | Analogue input only, fixed paths **[reported]** |
 | "Walk About Camera" (1.24 era) | `.scs` | Interior camera with widened limits | Only moves around the cab **[reported]** |
+| SPF_CabinWalk (TrackAndTruckDevs) | SPF-Framework plugin, open source | Animates the interior camera's seat position and head rotation through SPF's Camera API; one hook on the camera-from-input update | Cabin only: driver seat, passenger seat, standing spot, sofa. Walk forward/back in a fixed area, head bob, crouch. Only leaves the seat when stopped with the parking brake on **[reported, source read]** |
 
 ## 4. What this means
 
@@ -212,6 +239,99 @@ If manual navigation becomes the bottleneck, try REA's Windows mode or a lighter
 Ghidra MCP bridge on a copy of the exe, and confirm every finding live in x64dbg
 before it goes into the plugin.
 
+### SPF-Framework (TrackAndTruckDevs) **[reported, repo docs and source; not run here]**
+
+An open-source (Apache-2.0) C++ plugin framework for ETS2/ATS, still active (last
+commit 2026-10-03). The closest thing ETS2 has to SKSE + CommonLib. One
+`spf-framework.dll` goes in `bin/win_x64/plugins`; plugins load through it with a
+stable C API. Features relevant to us:
+
+- **Camera API**: switch cameras; read and write the free camera's position,
+  orientation and FOV; interior camera seat position, head rotation and limits;
+  behind and top cameras including their `validation` (collision) settings.
+  This covers most of milestone 2.2.
+- **Hooks API**: signature hooking through MinHook. Signatures support ranges and
+  optional bytes (`40 [0-1?] 56 48 [81-83] ec`), so one pattern can match several
+  game builds. Also has string, constant, vtable and backward searches.
+- **Reflection API**: `Reflection_GetAttributeOffset("vehicle_interior_camera",
+  "head_offset")` resolves a field offset **by name** from the engine's own unit
+  descriptors (the same names as in `.sii` files). This could replace hard-coded
+  offsets like `CAMERA_PLACEMENT = 0x40` in `plugin/src/game_camera.cpp` and survive
+  game updates.
+- Also: Vehicle API (player and traffic vehicles), GameWorld API (time, cities),
+  virtual input, console commands, keybinds, and a Dear ImGui UI on DX11, DX12
+  and OpenGL.
+- Not provided: ground height, collision queries, spawning actors. Milestones 2.4,
+  2.5 and 2b are still ours to reverse engineer.
+
+### x64dbg Prism3D Unit Resolver (Baldywaldy09) **[reported, repo only]**
+
+An x64dbg plugin for Prism3D, the ETS2 engine, by the author of ETS2MobileCam.
+Judging by its name and screenshot, it labels engine unit objects while debugging.
+It would help with the live half of reverse engineering that REA cannot do.
+
+### What this changes
+
+Building `takeawalk.dll` on SPF instead of the raw SDK would give us camera control,
+hooking, name-based offsets, keybinds and a settings UI. Our own work would be
+ground, collision and movement. The cost is a dependency: players must install SPF,
+and our plugin breaks if SPF lags a game update. Decide before starting 2.2.
+
+## 7. Techniques from crossover mods
+
+Checked 2026-10-05: two mods that mix whole games, for ideas that carry over.
+
+### SkyCraft: Minecraft in Skyrim **[reported, repo source read]**
+
+Both real games run at once. A Skyrim SKSE plugin (C++, CommonLibSSE-NG) and a
+Minecraft Fabric mod exchange state through shared memory. Minecraft runs hidden and
+owns player physics; Skyrim draws everything.
+
+- **Collision**: the plugin reads Skyrim's Havok world around the player and turns
+  it into 1/8-block voxels for Minecraft's collision. Their design doc describes two
+  stages: (A) ray casts on a grid around the player, spread over frames; (C) read
+  the actual collision shapes.
+- **Puppet player**: Skyrim's own movement is switched off and the player is moved
+  to Minecraft's position each frame, so NPC AI, triggers and quests still see it.
+- **Camera**: one hook on `PlayerCamera::Update` overwrites the view each frame.
+- **Testing**: stand-in scripts (`fake_skyrim.py`, `fake_guest.py`) test each half
+  without the other game.
+- Possible only because Skyrim's community has mapped the engine (CommonLib's named
+  classes and Address Library IDs). ETS2 has no equivalent at that depth.
+
+### 2010 Rust Rewrite Mashup: MW2 + Skate 3 + Minecraft **[reported, repo source read]**
+
+No game is modded. MW2 runs on IW4L (a from-scratch Rust rewrite reading the
+original files), Skate 3's physics and animation come from a Rust reimplementation,
+and the Minecraft world comes from MinecraftOSS. All three are libraries in one
+process.
+
+- **Collision handoff**: the MW2 map's collision around the player is given to the
+  skate physics and rebuilt as the skater moves.
+- **Generated gameplay data** (`skate/rails.rs`): MW2 maps have no grind rails, so
+  rails are found by probing collision. A walkable face edge counts as a lip when
+  the ground falls away past it and nothing rises there.
+- **Retargeting** (`skate/rig.rs`): Skate 3 bones are mapped onto the MW2 soldier
+  skeleton.
+- **No game files shipped**: a converter extracts what it needs from the player's
+  own `default.xex` on first run.
+- Not an option for ETS2: there is no open rewrite of the engine.
+
+### Ideas for this project
+
+1. **2.4 Ground**: SkyCraft's stage A. Find the call behind the cameras'
+   `validation` check and cast rays on a grid around the walker instead of building
+   our own world model.
+2. **2.5 / 2.6 Walkable areas**: SCS's objection is that the map has no pedestrian
+   boundaries. Derive them from collision the way `rails.rs` derives rails: slope
+   limit, step height, drop-offs.
+3. **2.6 Puppet**: switch off the normal control, write the camera every frame, keep
+   the engine's own objects in place (what `game_camera.cpp` already does).
+4. **Testing**: a stand-in that replays recorded telemetry, so movement code can be
+   tested without restarting the game.
+5. **2b**: retarget clips from another skeleton onto the `meso` NPC skeleton for
+   the missing run/jump/crouch, once 2b.1 shows an actor can be controlled.
+
 ## Sources
 
 - https://modding.scssoft.com/wiki/Documentation/Engine/Mod_manager
@@ -228,3 +348,9 @@ before it goes into the plugin.
 - https://forum.scssoft.com/viewtopic.php?t=325803
 - https://steamcommunity.com/sharedfiles/filedetails/?id=2646232163
 - https://github.com/morluto/rea
+- https://modding.scssoft.com/wiki/Documentation
+- https://github.com/TrackAndTruckDevs/SPF-Framework
+- https://github.com/TrackAndTruckDevs/SPF_CabinWalk
+- https://github.com/Baldywaldy09/x64dbgPrism3DUnitResolver
+- https://github.com/US3R190/SkyCraft-chasm-
+- https://github.com/chasmlol/2010-rust-rewrite-mashup
