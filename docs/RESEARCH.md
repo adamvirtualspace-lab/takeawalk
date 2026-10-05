@@ -124,11 +124,34 @@ CommonLib do for Skyrim, but on a much smaller scale.
 
 | Mod | Type | How it works | Notes |
 |---|---|---|---|
-| TM Real Walk (IzuanBakar) | plugin DLL + ini | Hooks the game's collision; own movement, sounds, settings menu (Ctrl+F10) | 1.61, closed source. Walk/run/crouch/jump, flashlight, refuelling on foot **[reported]** |
+| TM Real Walk (IzuanBakar) | plugin DLL + ini | Hooks the game's collision; own movement, sounds, settings menu (Ctrl+F10) | 1.61, closed source. Walk/run/crouch/jump, flashlight, refuelling on foot **[reported]**. See notes below |
 | ETS2MobileCam (Baldywaldy09) | plugin DLL, C++/CMake/MSVC, open source | Overwrites the free camera's placement every tick via reverse-engineered `camera_manager_u`/`core_camera_u`; patches the camera tick so the engine does not overwrite it; raw mouse input | No ground/collision handling described **[reported]** |
 | Roextended "Walk Around Truck" | `.scs` + edited `controls.sii`/`config_local.cfg` | Abuses eye/head-tracking presets to offset the head along fixed paths around the truck | Analogue input only, fixed paths **[reported]** |
 | "Walk About Camera" (1.24 era) | `.scs` | Interior camera with widened limits | Only moves around the cab **[reported]** |
 | SPF_CabinWalk (TrackAndTruckDevs) | SPF-Framework plugin, open source | Animates the interior camera's seat position and head rotation through SPF's Camera API; one hook on the camera-from-input update | Cabin only: driver seat, passenger seat, standing spot, sofa. Walk forward/back in a fixed area, head bob, crouch. Only leaves the seat when stopped with the parking brake on **[reported, source read]** |
+
+### TM Real Walk in detail **[reported, Gumroad product page, v1.0.0 Beta 4.5, read 2026-10-05]**
+
+Closed source, licensed per PC with an online key check. There's a free 7-day trial;
+the full version is paid. Windows only, single-player only, ETS2 and ATS 1.61.
+Hints about how it works, from its own description and changelog:
+
+- **Needs `g_developer 1` and `g_console 1`**, so it probably builds on the developer
+  free camera, as ETS2MobileCam and our `game_camera.cpp` do. (Inference.)
+- **Ground and collision come from the game's own collision scene**, which it finds
+  by scanning memory: Beta 4.5 fixed a bug where that scan touched all of the game's
+  reserved memory and cost up to ~10 GB of RAM. Lesson for 2.4: find the collision
+  scene through a signature or global pointer, or scan committed memory only.
+- **Limits of the game's collision**: parked cars, trailers and furniture inside
+  buildings have none, so you walk through them. Stairs need "hold E", and F8 hops
+  through a wall when stuck. Ground following has gaps even for them.
+- Traffic can knock the walker over, so it reads traffic vehicle positions.
+- Other features: trailer coupling on foot, fuelling with a pay-at-pump animation,
+  flashlight, ground shadow, TrackIR, a 16-language settings menu.
+- First person only. No third person.
+
+We don't reverse engineer their DLL: it's licensed, closed code. Playing the trial to
+compare how walking feels is fine.
 
 ## 4. What this means
 
@@ -354,3 +377,4 @@ process.
 - https://github.com/Baldywaldy09/x64dbgPrism3DUnitResolver
 - https://github.com/US3R190/SkyCraft-chasm-
 - https://github.com/chasmlol/2010-rust-rewrite-mashup
+- https://izuanbakar.gumroad.com/l/tmrealwalk
