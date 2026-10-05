@@ -180,6 +180,38 @@ with a ground shadow and a hand-held flashlight. **[reported]**
 - `def.scs` is HashFS v2. Until an extractor is installed, `tools/scs_scan.py` can
   pull text files out of it by keyword.
 
+## 6. Reverse-engineering tooling
+
+Checked 2026-10-05 for phase 2.2 onward.
+
+### REA (morluto/rea) **[reported, REA docs; not run here]**
+
+An agent-driven front end (CLI + MCP server) over a disassembler: Hopper on macOS,
+or a user-installed Ghidra. Results (decompiled functions, references, strings, call
+paths) come back as structured records an agent can work from.
+
+- Windows support is an experimental "Windows Ghidra P0": x64 host, exactly
+  Ghidra 12.1.4 + JDK 21, installed by hand (`rea setup` does nothing on Windows).
+  Accepts only native 64-bit non-DLL PE executables, so `eurotrucks2.exe` qualifies
+  but our plugin DLL does not.
+- Static only. On Windows it cannot attach to the running game, read memory or set
+  breakpoints, so live offsets (`camera_manager_u` layout, placement) still need
+  x64dbg or Cheat Engine.
+- The Ghidra project is ephemeral and deleted on close, so a large exe may be
+  re-analysed every session. Not measured.
+- Does not generate byte signatures; `tools/sigscan.py` stays.
+- Can compare function dossiers between two builds, which may help re-find
+  signatures after a game update.
+
+Where it could help: tracing the camera manager and free-camera tick (2.2), finding
+the collision path behind the photo camera's `validation` setting (2.4/2.5), and
+the mover/actor spawn spike (2b.1).
+
+Decision: not adopted yet. Start phase 2.2 with plain Ghidra (needed either way).
+If manual navigation becomes the bottleneck, try REA's Windows mode or a lighter
+Ghidra MCP bridge on a copy of the exe, and confirm every finding live in x64dbg
+before it goes into the plugin.
+
 ## Sources
 
 - https://modding.scssoft.com/wiki/Documentation/Engine/Mod_manager
@@ -195,3 +227,4 @@ with a ground shadow and a hand-held flashlight. **[reported]**
 - https://forum.scssoft.com/viewtopic.php?t=353040
 - https://forum.scssoft.com/viewtopic.php?t=325803
 - https://steamcommunity.com/sharedfiles/filedetails/?id=2646232163
+- https://github.com/morluto/rea
