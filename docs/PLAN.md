@@ -45,7 +45,12 @@ Outcome: a short write-up in `docs/` saying which of A/B/C below applies.
 
 ## Phase 2: plugin
 
-Language C++, built with MSVC + CMake, SCS SDK 1.15 for the plugin entry points.
+Language C++, built with MSVC via `plugin/build.ps1` (Visual Studio 2022 is installed;
+no CMake needed), SCS SDK 1.15 in `plugin/third_party/scs_sdk` for the entry points.
+
+Status (2026-10-04): phase 1 tested in game: the photo camera reaches far beyond the
+stock limit at walking speed, but it is still just photo mode. 2.1 is built and
+installed; in-game test pending.
 
 | Milestone | Content |
 |---|---|
