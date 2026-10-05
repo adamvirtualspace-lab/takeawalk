@@ -205,7 +205,7 @@ under player control. The first is easy; the second is the real problem.
 | Mover on the map | Placed in the map editor, loops along a fixed path | Not player-controlled |
 | Mover on a truck locator (the "animated passenger" trick) | Accessory locator hosts a mover | Glued to the truck, loops one clip. Not controllable |
 | `animated_model_data` | Model + animation with `trigger_distance_sq`, `one_shot` (garage doors, tow scene) | Fixed position, trigger-only |
-| Character as a drivable "vehicle" | A truck definition whose model is a person; chase camera gives third person and vehicle physics gives collision | Untested idea. No way to swap vehicles on the spot from data, and animation would not follow speed |
+| Character as a drivable "vehicle" | A truck definition whose model is a person; chase camera gives third person and vehicle physics gives collision | Rejected 2026-10-05. Swapping vehicles sends your truck to a garage, so it cannot stay parked beside you; animation would not follow speed |
 | Plugin spawns and drives an engine actor | Reverse-engineer how the engine creates a model/mover actor, then set its placement and animation each frame | The real solution. Hardest reverse-engineering task in the project |
 | Plugin renders its own mesh | Hook the renderer and draw a skinned mesh ourselves | Lighting/shadows will not match; depends on renderer (this install has run both `gl` and `dx11`) |
 

@@ -116,29 +116,6 @@ Known limits:
 - Every player needs the same game version and plugin version.
 - Game updates can break the reverse-engineered parts for everyone at once.
 
-### Side experiment: a "person vehicle" (data mod, no plugin)
-
-Idea: a vehicle mod whose model is a person. Convoy would sync it for free, the
-chase camera gives third person, and vehicle physics gives collision, including
-against other trucks.
-
-Worth a short test because it needs no reverse engineering: a vehicle definition with
-a person model, tiny wheelbase, low top speed, wheels hidden. The 1.61 SDK has
-`car_job` events, so the game already handles non-truck player vehicles. How switching
-into one works needs checking.
-
-Why it can't replace phase 2:
-
-- You don't get out of your truck; you switch vehicles. That probably only happens at
-  a garage, so your truck can't stay parked where you are.
-- It moves like a car: turning circle, no sidestep, momentum.
-- Legs won't animate to walking. At best wheel- or steering-driven parts move, so the
-  person slides.
-- The game still treats you as a vehicle: fines, tolls, damage, AI traffic.
-
-If the test is fun, it could ship as a separate "Convoy costume" mod. Low risk: it's
-a data mod and touches nothing else.
-
 ## Phase 3: release
 
 - Pack the data mod as `.scs` (zip, no `.git`, no `docs/`, no `plugin/`).
