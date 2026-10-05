@@ -11,6 +11,11 @@
 
 namespace game {
 
+/**
+ * @brief Side of a map chunk (m). The engine stores X and Z as chunk index plus offset.
+ */
+const double CHUNK_SIZE = 512.0;
+
 #pragma pack(push, 1)
 
 /**
@@ -27,6 +32,11 @@ struct placement_t
 };
 
 #pragma pack(pop)
+
+/**
+ * @brief Stores a world position in the placement, splitting X and Z into chunk and offset.
+ */
+void set_world_position(placement_t &placement, double x, double y, double z);
 
 /**
  * @brief Finds the camera code in the running game. False if the game build is not supported.

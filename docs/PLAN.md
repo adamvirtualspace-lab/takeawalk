@@ -48,9 +48,9 @@ Outcome: a short write-up in `docs/` saying which of A/B/C below applies.
 Language C++, built with MSVC via `plugin/build.ps1` (Visual Studio 2022 is installed;
 no CMake needed), SCS SDK 1.15 in `plugin/third_party/scs_sdk` for the entry points.
 
-Status (2026-10-04): phase 1 tested in game: the photo camera reaches far beyond the
-stock limit at walking speed, but it is still just photo mode. 2.1 is built and
-installed; in-game test pending.
+Status (2026-10-05): phase 1 tested in game: the photo camera reaches far beyond the
+stock limit at walking speed, but it is still just photo mode. 2.1-2.3 work in game
+(F9 steps out, WASD + mouse walk on a flat plane at the truck's height). Next is 2.4.
 
 | Milestone | Content |
 |---|---|

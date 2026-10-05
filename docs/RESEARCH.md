@@ -167,6 +167,56 @@ itself (orbit behind the character) is simple.
 No existing walking mod I found advertises third person; TM Real Walk is first person
 with a ground shadow and a hand-held flashlight. **[reported]**
 
+## 4c. Camera internals used by the plugin **[verified in game on 1.61.1.1, 2026-10-05]**
+
+Starting point was the layout documented by ETS2MobileCam for 1.58; the values below
+are the ones confirmed to work on 1.61.1.1. `tools/sigscan.py` checks the signatures
+against an exe on disk.
+
+- Camera manager pointer: signature `48 8B 05 ?? ?? ?? ?? 41 FF CE` (one match, RVA
+  0x741D0F). The RIP-relative operand is a global holding `camera_manager_u *`.
+- Free camera update function: signature
+  `40 53 48 83 EC ?? 48 83 B9 ?? ?? ?? ?? 00 48 8B D9 0F 29 74 24` (one match, RVA
+  0x54FAD0). Overwriting its first byte with `C3` (ret) stops the engine from moving
+  the free camera, so placements written by the plugin stick.
+- `camera_manager_u`: current camera index u32 at 0x10, requested camera index u32 at
+  0x14 (0x0E = none; writing an index switches camera), camera pointer array at 0x30
+  (items 0x38, count 0x40; 14 cameras), index 0 is the free camera.
+- `core_camera_u`: FOV float at 0x20, placement at 0x40: `float position[3]`,
+  `int16 chunk_x`, `int16 chunk_z`, `float rotation[4]` (quaternion w, x, y, z).
+- Coordinates: world X/Z = chunk * 512 + offset, with the offset centred on the chunk
+  (range -256..256). Y is plain world height. Checked against telemetry: camera
+  (149.73, -124.80) in chunk (26, -195) next to a truck at world (13454.8, -99956.0).
+- Orientation: yaw around +Y equals telemetry heading * 2*pi (0 = north = -Z,
+  counter-clockwise), pitch around +X is positive upward; quaternion = yaw * pitch.
+- Writing `requested = 0` works without `g_developer`.
+
+## 4d. Physics internals used for ground following
+
+Found by static analysis of the 1.61.1.1 exe with `tools/exe_analysis.py` (needs the
+`capstone` and `numpy` Python packages). **The runtime behaviour is not confirmed yet.**
+
+- The game links **PhysX 3.4** statically (source paths
+  `...\physx\version_patched\PhysX_3.4\...` are in the exe). It is built without RTTI,
+  so classes cannot be found through type information.
+- `NpSceneQueries::raycast` is at RVA 0x1B04B90. It was identified as the virtual
+  function just before the one referencing the string " Precise sweep doesn't support
+  MTD..." (`sweep`) in the `NpScene` vtable (vtable RVA 0x2500748, raycast is entry 272).
+  `NpVolumeCache::raycast` (RVA 0x1B0C860) starts with the same 76 bytes, so the
+  signature has to be longer than that.
+- Arguments: `this`, `const PxVec3 *origin`, `const PxVec3 *unitDir`, `float distance`,
+  `PxRaycastCallback *`, `const PxHitFlags *` (by address, because `PxFlags` has a copy
+  constructor), `const PxQueryFilterData *`, `PxQueryFilterCallback *`, `const PxQueryCache *`.
+- `NpPhysics::mInstance` is the global at RVA 0x3046FC0, found from
+  `NpPhysics::createInstance` (the function referencing "Scale invalid."). Signature
+  for one instruction reading it: `48 8B 3D ?? ?? ?? ?? 48 8B 4B 08 48 81 C7 A0 00 00 00`.
+- `NpPhysics`: scene array pointer at +0x08, scene count (u32) at +0x10, seen in
+  `NpPhysics::createScene`.
+- Unknown until tested in game: whether ground and buildings are in the PhysX scene as
+  query-able static shapes, and which coordinate origin the scene uses. The plugin
+  assumes world coordinates minus a whole number of 512 m chunks and searches for the
+  offset by looking for the truck with dynamic-only rays.
+
 ## 5. Local environment
 
 - Game: `E:\home\adam\.local\share\Steam\steamapps\common\Euro Truck Simulator 2`
