@@ -23,6 +23,13 @@ const char *const RAYCAST_SIGNATURE =
 	"F3 41 0F 10 43 20 4D 8D 4B 20 48 8B 84 24 A8 00 00 00 49 89 53 C8 49 8D 53 C8 4D 89 43 D0"
 ;
 
+// The place where the player's vehicle turns on the collision of the map around it:
+//   call make_activation_box; mov rcx, [rip + world]; lea rdx, [rsp+58h]; xor r8d, r8d; call activate_collision; mov rcx, [rsi+...]
+const char *const ACTIVATION_SIGNATURE = "E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8D 54 24 58 45 33 C0 E8 ?? ?? ?? ?? 48 8B 8E";
+const size_t ACTIVATION_MAKE_BOX_CALL = 0;
+const size_t ACTIVATION_WORLD_LOAD = 5;
+const size_t ACTIVATION_ACTIVATE_CALL = 20;
+
 // NpPhysics
 const size_t PHYSICS_SCENES_ITEMS = 0x08;	// NpScene **
 const size_t PHYSICS_SCENES_COUNT = 0x10;	// u32
@@ -136,8 +143,30 @@ const float LOCATE_BELOW = 4.0f;
 // Distance between the points probed along the truck (m).
 const float LOCATE_PROBE_SPACING = 1.5f;
 
+/**
+ * @brief Builds the box the game searches for map items in.
+ *
+ * The box is square: its half side is half the larger of size X and Z, plus a little.
+ *
+ * @param position Three floats and two 16-bit chunk indices, as at the start of placement_t.
+ * @param size Three floats.
+ */
+typedef void (*make_activation_box_t)(void *unused, void *box, const void *position, const float *size);
+
+/**
+ * @brief Creates the collision of the map items inside the box, unless it exists already.
+ *
+ * The game calls this every frame for the player's vehicle; collision nothing asked
+ * for is removed again.
+ */
+typedef void (*activate_collision_t)(void *world, const void *box, uint8_t flag);
+
 uint8_t          **instance_global = NULL;
 raycast_function_t raycast_function = NULL;
+
+uint8_t             **world_global = NULL;
+make_activation_box_t make_activation_box = NULL;
+activate_collision_t  activate_collision = NULL;
 
 bool faulted = false;
 bool failure_logged = false;
@@ -180,11 +209,12 @@ int guarded_raycast(void *const scene, const vec3_t *const origin, const vec3_t 
 }
 
 /**
- * @brief Casts a ray straight down in physics coordinates, through every scene.
+ * @brief Casts a ray in physics coordinates through every scene.
  *
- * @param[out] height Height of the closest hit.
+ * @param direction Unit vector.
+ * @param[out] closest The nearest hit.
  */
-bool raycast_down(const float x, const float y, const float z, const float distance, const uint16_t kinds, float &height)
+bool raycast(const vec3_t &origin, const vec3_t &direction, const float distance, const uint16_t kinds, raycast_hit_t &closest)
 {
 	if (! raycast_function || faulted) {
 		return false;
@@ -193,8 +223,6 @@ bool raycast_down(const float x, const float y, const float z, const float dista
 	void *scene_list[MAX_SCENE_COUNT];
 	const size_t scene_count = scenes(scene_list);
 
-	const vec3_t origin = { x, y, z };
-	const vec3_t direction = { 0.0f, -1.0f, 0.0f };
 	query_filter_t filter = {};
 	filter.flags = kinds;
 
@@ -207,15 +235,32 @@ bool raycast_down(const float x, const float y, const float z, const float dista
 		const int result = guarded_raycast(scene_list[i], &origin, &direction, distance, &callback, &filter);
 		if (result < 0) {
 			faulted = true;
-			log_message(SCS_LOG_TYPE_error, "the game's raycast crashed, ground following is disabled");
+			log_message(SCS_LOG_TYPE_error, "the game's raycast crashed, collision is disabled");
 			return false;
 		}
-		if ((result > 0) && callback.has_block && (! hit || (callback.block.position.y > height))) {
+		if ((result > 0) && callback.has_block && (! hit || (callback.block.distance < closest.distance))) {
 			hit = true;
-			height = callback.block.position.y;
+			closest = callback.block;
 		}
 	}
 	return hit;
+}
+
+/**
+ * @brief Casts a ray straight down in physics coordinates.
+ *
+ * @param[out] height Height of the closest hit.
+ */
+bool raycast_down(const float x, const float y, const float z, const float distance, const uint16_t kinds, float &height)
+{
+	const vec3_t origin = { x, y, z };
+	const vec3_t direction = { 0.0f, -1.0f, 0.0f };
+	raycast_hit_t hit;
+	if (! raycast(origin, direction, distance, kinds, hit)) {
+		return false;
+	}
+	height = hit.position.y;
+	return true;
 }
 
 /**
@@ -327,7 +372,57 @@ bool physics_attach(void)
 
 	instance_global = reinterpret_cast<uint8_t **>(memory::resolve_relative(instance_instruction, 3, 7));
 	raycast_function = reinterpret_cast<raycast_function_t>(raycast);
+
+	world_global = NULL;
+	make_activation_box = NULL;
+	activate_collision = NULL;
+	uint8_t *const activation = memory::find_signature(ACTIVATION_SIGNATURE);
+	if (activation) {
+		make_activation_box = reinterpret_cast<make_activation_box_t>(memory::resolve_relative(activation + ACTIVATION_MAKE_BOX_CALL, 1, 5));
+		world_global = reinterpret_cast<uint8_t **>(memory::resolve_relative(activation + ACTIVATION_WORLD_LOAD, 3, 7));
+		activate_collision = reinterpret_cast<activate_collision_t>(memory::resolve_relative(activation + ACTIVATION_ACTIVATE_CALL, 1, 5));
+	}
+	else {
+		log_message(SCS_LOG_TYPE_warning, "unable to find how the game activates collision, only what is near the truck will be solid");
+	}
 	return true;
+}
+
+/**
+ * @brief Calls into the game. False if the call crashed.
+ */
+static bool guarded_activate(void *const world, const void *const position, const float *const size)
+{
+	__try {
+		// Larger than the 40 bytes the game uses.
+
+		__declspec(align(16)) uint8_t box[64] = {};
+		make_activation_box(NULL, box, position, size);
+		activate_collision(world, box, 0);
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+void physics_activate(const double x, const double y, const double z, const float radius)
+{
+	if (! activate_collision || faulted) {
+		return;
+	}
+	uint8_t *world = NULL;
+	if (! memory::read(reinterpret_cast<const uint8_t *>(world_global), world) || ! world) {
+		return;
+	}
+
+	placement_t position = {};
+	set_world_position(position, x, y, z);
+	const float size[3] = { radius * 2.0f, 2.0f, radius * 2.0f };
+	if (! guarded_activate(world, &position, size)) {
+		activate_collision = NULL;
+		log_message(SCS_LOG_TYPE_error, "the game's collision activation crashed, it will not be used again");
+	}
 }
 
 bool physics_locate(const double truck_x, const double truck_y, const double truck_z, const float yaw)
@@ -392,6 +487,42 @@ bool physics_locate(const double truck_x, const double truck_y, const double tru
 		origin_chunk_x, origin_chunk_z, truck_chunk_x, truck_chunk_z, scene_count,
 		truck_y, ground_found ? "at" : "not found", ground
 	);
+	return true;
+}
+
+size_t physics_scenes(void **const result, const size_t capacity)
+{
+	void *scene_list[MAX_SCENE_COUNT];
+	size_t count = scenes(scene_list);
+	if (count > capacity) {
+		count = capacity;
+	}
+	memcpy(result, scene_list, count * sizeof(void *));
+	return count;
+}
+
+bool physics_origin(int &chunk_x, int &chunk_z)
+{
+	chunk_x = origin_chunk_x;
+	chunk_z = origin_chunk_z;
+	return origin_known;
+}
+
+bool physics_obstacle(const double x, const double y, const double z, const float direction_x, const float direction_z, const float distance, obstacle_t &obstacle)
+{
+	if (! origin_known) {
+		return false;
+	}
+	const vec3_t origin = { to_physics(x, origin_chunk_x), static_cast<float>(y), to_physics(z, origin_chunk_z) };
+	const vec3_t direction = { direction_x, 0.0f, direction_z };
+	raycast_hit_t hit;
+	if (! raycast(origin, direction, distance, QUERY_STATIC | QUERY_DYNAMIC, hit)) {
+		return false;
+	}
+	obstacle.distance = hit.distance;
+	obstacle.normal[0] = hit.normal.x;
+	obstacle.normal[1] = hit.normal.y;
+	obstacle.normal[2] = hit.normal.z;
 	return true;
 }
 

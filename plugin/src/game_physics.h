@@ -6,7 +6,19 @@
 
 #pragma once
 
+#include <stddef.h>
+
 namespace game {
+
+/**
+ * @brief The game's PxScene objects.
+ */
+size_t physics_scenes(void **result, size_t capacity);
+
+/**
+ * @brief Chunk which is the origin of physics coordinates. False until physics_locate() succeeded.
+ */
+bool physics_origin(int &chunk_x, int &chunk_z);
 
 /**
  * @brief Finds the physics code in the running game. False if the game build is not supported.
@@ -24,6 +36,15 @@ bool physics_attach(void);
 bool physics_locate(double truck_x, double truck_y, double truck_z, float yaw);
 
 /**
+ * @brief Makes the map around a world position solid.
+ *
+ * The game only keeps collision for map items a vehicle is touching. This asks for
+ * the items within a square of the given half side as well. It has to be repeated
+ * every frame, as the game drops collision nothing asks for.
+ */
+void physics_activate(double x, double y, double z, float radius);
+
+/**
  * @brief Looks for static geometry straight below a world position.
  *
  * @param from_y Height the search starts at.
@@ -31,5 +52,28 @@ bool physics_locate(double truck_x, double truck_y, double truck_z, float yaw);
  * @param[out] height Height of the first surface found.
  */
 bool physics_ground_height(double x, double z, double from_y, float distance, float &height);
+
+/**
+ * @brief Something solid in the way of a horizontal move.
+ */
+struct obstacle_t
+{
+	/**
+	 * @brief Distance to the surface (m). Zero if the start point is inside the obstacle.
+	 */
+	float distance;
+
+	/**
+	 * @brief Unit vector pointing away from the surface.
+	 */
+	float normal[3];
+};
+
+/**
+ * @brief Looks for static or movable geometry along a horizontal line from a world position.
+ *
+ * @param direction_x,direction_z Unit vector in the X/Z plane.
+ */
+bool physics_obstacle(double x, double y, double z, float direction_x, float direction_z, float distance, obstacle_t &obstacle);
 
 } // namespace game

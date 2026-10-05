@@ -244,7 +244,8 @@ against an exe on disk.
 ## 4d. Physics internals used for ground following
 
 Found by static analysis of the 1.61.1.1 exe with `tools/exe_analysis.py` (needs the
-`capstone` and `numpy` Python packages). **The runtime behaviour is not confirmed yet.**
+`capstone` and `numpy` Python packages), then **confirmed in game on 2026-10-05**:
+the raycast call works and slopes are followed.
 
 - The game links **PhysX 3.4** statically (source paths
   `...\physx\version_patched\PhysX_3.4\...` are in the exe). It is built without RTTI,
@@ -262,10 +263,41 @@ Found by static analysis of the 1.61.1.1 exe with `tools/exe_analysis.py` (needs
   for one instruction reading it: `48 8B 3D ?? ?? ?? ?? 48 8B 4B 08 48 81 C7 A0 00 00 00`.
 - `NpPhysics`: scene array pointer at +0x08, scene count (u32) at +0x10, seen in
   `NpPhysics::createScene`.
-- Unknown until tested in game: whether ground and buildings are in the PhysX scene as
-  query-able static shapes, and which coordinate origin the scene uses. The plugin
-  assumes world coordinates minus a whole number of 512 m chunks and searches for the
-  offset by looking for the truck with dynamic-only rays.
+- There is one scene. Ground is in it as static geometry that rays can hit, and the
+  truck as dynamic geometry. Heights are plain world heights (ground under the truck
+  3.97, truck origin 3.98, so the truck's origin is at ground level).
+- Scene coordinates are world coordinates minus a whole number of 512 m chunks. In the
+  one session measured the origin was the chunk the truck was in, (26, -195). The
+  plugin finds it by looking for the truck with dynamic-only rays and re-checks every
+  2 s, so it does not depend on that rule.
+- The walk keys are hidden from the game by subclassing its window procedure; the
+  user confirmed the engine does not rev while walking.
+
+## 4e. Collision only exists around vehicles
+
+Measured in game with a diagnostic build (v0.6), then traced in the exe.
+
+- The PhysX scene held only about 70 static actors in a town. Fences, buildings and
+  ground more than 10-25 m from the truck were not in it, so rays passed through them.
+- Static actors are created on demand. Call path of a creation at run time (exe RVAs):
+  main loop `426360` -> `4260FE` -> `4CF830` -> player vehicle update `5D86DB` ->
+  `489E10` -> item visitor (`13CAE98`, virtual `4A71D0`) -> `7315BB` (creates the
+  static actor) -> `1655070` (scene add) -> `physics_static_actor_physx_t::_add_actor_to_scene`
+  (`1639EE0`, vtable slot RVA 0x2448848; `_remove_actor_from_scene` is the next slot).
+- `489E10(world, box, flag)` creates the collision of the map items inside a box. The
+  vehicle update builds the box with `46D4C0(unused, box_out, position, size)`:
+  `position` is three floats plus two int16 chunk indices, `size` three floats. The box
+  is square with half side `clamp((max(size.x, size.z) + 1) / 2, 0.01, 200) + 0.125` m
+  and at least 50 m half height; it is 40 bytes. For the truck that is only about a
+  metre beyond its own bounding box.
+- `world` is the global at RVA 0x36AE6D8. One signature gives all three addresses:
+  `E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8D 54 24 58 45 33 C0 E8 ?? ?? ?? ?? 48 8B 8E`
+  (call make box, load world, call activate), one match at RVA 0x5D879E.
+- `489E10` has eight callers, so other vehicles do the same. Collision nothing asks
+  for disappears again (the actor count dropped from 105 to 69 after loading); how was
+  not traced, the removal did not go through the vtable slot that was watched.
+- v0.7 calls `489E10` every frame with a 25 m box around the walker. **Not yet
+  confirmed in game.**
 
 ## 5. Local environment
 

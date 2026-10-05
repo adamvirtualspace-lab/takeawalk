@@ -21,8 +21,9 @@
 #include "game_physics.h"
 #include "input.h"
 #include "log.h"
+#include "physics_trace.h"
 
-#define TAKEAWALK_VERSION "0.4"
+#define TAKEAWALK_VERSION "0.7"
 
 namespace {
 
@@ -46,12 +47,43 @@ const float EXIT_SIDE_STEP = 1.5f;
 const scs_value_fvector_t DEFAULT_HEAD_POSITION = { -0.7f, 2.0f, -1.5f };
 
 // Highest ledge that can be walked onto, and how far down the ground is looked for (m).
-const float STEP_HEIGHT = 0.6f;
-const float GROUND_SEARCH_DEPTH = 4.0f;
+// Ground further down than that is ignored: where the map has no collision, the next
+// surface below can be far underneath what is visible.
+const float STEP_HEIGHT = 0.45f;
+const float GROUND_SEARCH_DEPTH = 8.0f;
 
-// How fast the feet follow the ground up a step and down a drop (m/s).
-const float RISE_SPEED = 4.0f;
-const float FALL_SPEED = 8.0f;
+// How far down the log reports what is there when the ground is lost (m).
+const float GROUND_REPORT_DEPTH = 200.0f;
+
+// How fast the feet follow the ground up and down while walking on it (m/s).
+const float GROUND_FOLLOW_SPEED = 4.0f;
+
+// A drop larger than this is a fall instead of a step down (m).
+const float FALL_THRESHOLD = 0.35f;
+
+const float GRAVITY = 9.81f;	// m/s^2
+
+// Half the width of the body: how close the walker gets to a wall (m).
+const float BODY_RADIUS = 0.3f;
+
+// Heights above the feet at which obstacles are looked for (m). The lowest is above
+// STEP_HEIGHT, and the gaps are small enough not to miss a guard rail.
+const float PROBE_HEIGHTS[] = { 0.5f, 0.75f, 1.0f, 1.3f, 1.65f };
+
+// Surfaces whose normal points up more than this are ground to walk on, not walls.
+const float WALKABLE_NORMAL_Y = 0.6f;
+
+// The map is made solid within this distance of the walker (m).
+const float ACTIVATION_RADIUS = 25.0f;
+
+// Number of directions checked around the body to keep it clear of walls.
+const int CLEARANCE_DIRECTIONS = 8;
+
+// Most "ground lost / found" lines written to the log during one walk.
+const int MAX_GROUND_REPORTS = 30;
+
+// How often the diagnostics count the static collision in the scene (ms).
+const ULONGLONG TRACE_CENSUS_INTERVAL_MS = 5000;
 
 // How often the physics world's origin is checked against the truck (s).
 const float PHYSICS_LOCATE_INTERVAL = 2.0f;
@@ -84,6 +116,9 @@ struct walk_state_t
 	game::placement_t   placement;
 	LARGE_INTEGER       last_update;
 	float               time_since_locate;
+	float               fall_speed;		// m/s, downward
+	bool                ground_found;
+	int                 ground_reports;
 };
 
 scs_log_t         game_log = NULL;
@@ -133,6 +168,46 @@ void locate_physics(void)
 }
 
 /**
+ * @brief Asks the game for the collision of the map around the walker.
+ *
+ * Without this only what the truck touches is solid.
+ */
+void activate_surroundings(void)
+{
+	if (physics_supported) {
+		game::physics_activate(walk.position[0], walk.position[1], walk.position[2], ACTIVATION_RADIUS);
+	}
+}
+
+/**
+ * @brief Notes in the log when the ground under the walker appears or disappears.
+ *
+ * The collision world does not cover the whole map; the distance from the truck
+ * shows where it ends.
+ */
+void report_ground(const bool found)
+{
+	if ((found == walk.ground_found) || (walk.ground_reports >= MAX_GROUND_REPORTS)) {
+		return;
+	}
+	walk.ground_found = found;
+	++walk.ground_reports;
+
+	const scs_value_dvector_t &truck = telemetry.truck_placement.position;
+	const double distance = sqrt((walk.position[0] - truck.x) * (walk.position[0] - truck.x) + (walk.position[2] - truck.z) * (walk.position[2] - truck.z));
+	log_message(
+		SCS_LOG_TYPE_message,
+		"ground %s %.1f m from the truck, at (%.1f, %.2f, %.1f)",
+		found ? "found" : "lost", distance, walk.position[0], walk.position[1], walk.position[2]
+	);
+
+	float deep = 0.0f;
+	if (! found && game::physics_ground_height(walk.position[0], walk.position[2], walk.position[1] + STEP_HEIGHT, GROUND_REPORT_DEPTH, deep)) {
+		log_message(SCS_LOG_TYPE_message, "  next surface below is at height %.2f", deep);
+	}
+}
+
+/**
  * @brief Moves the feet towards the ground below them. Without ground they stay at their height.
  *
  * @param frame_time Time to simulate (s). Zero puts the feet on the ground at once.
@@ -140,17 +215,134 @@ void locate_physics(void)
 void follow_ground(const float frame_time)
 {
 	float ground = 0.0f;
-	if (! physics_supported || ! game::physics_ground_height(walk.position[0], walk.position[2], walk.position[1] + STEP_HEIGHT, STEP_HEIGHT + GROUND_SEARCH_DEPTH, ground)) {
+	const bool found = physics_supported && game::physics_ground_height(walk.position[0], walk.position[2], walk.position[1] + STEP_HEIGHT, STEP_HEIGHT + GROUND_SEARCH_DEPTH, ground);
+	report_ground(found);
+	if (! found) {
+		walk.fall_speed = 0.0f;
 		return;
 	}
 
-	const double difference = ground - walk.position[1];
-	const double limit = ((difference > 0.0) ? RISE_SPEED : FALL_SPEED) * frame_time;
-	if ((frame_time <= 0.0f) || (fabs(difference) <= limit)) {
+	const double drop = walk.position[1] - ground;
+	if (frame_time <= 0.0f) {
 		walk.position[1] = ground;
+		walk.fall_speed = 0.0f;
+		return;
 	}
-	else {
-		walk.position[1] += (difference > 0.0) ? limit : -limit;
+
+	// Close to the ground the feet follow it; further above it they fall.
+
+	if (drop <= FALL_THRESHOLD) {
+		const double limit = GROUND_FOLLOW_SPEED * frame_time;
+		walk.position[1] = (fabs(drop) <= limit) ? ground : (walk.position[1] + ((drop > 0.0) ? -limit : limit));
+		walk.fall_speed = 0.0f;
+		return;
+	}
+	walk.fall_speed += GRAVITY * frame_time;
+	walk.position[1] -= walk.fall_speed * frame_time;
+	if (walk.position[1] <= ground) {
+		walk.position[1] = ground;
+		walk.fall_speed = 0.0f;
+	}
+}
+
+/**
+ * @brief Finds the nearest wall in the way of the body moving in a horizontal direction.
+ *
+ * Ground steep enough to walk on is not a wall, and neither is anything the walker
+ * is already inside of: that would trap them.
+ */
+bool find_wall(const float direction_x, const float direction_z, const float distance, game::obstacle_t &nearest)
+{
+	bool found = false;
+	for (const float height : PROBE_HEIGHTS) {
+		game::obstacle_t obstacle;
+		if (! game::physics_obstacle(walk.position[0], walk.position[1] + height, walk.position[2], direction_x, direction_z, distance, obstacle)) {
+			continue;
+		}
+		if ((obstacle.distance <= 0.0f) || (obstacle.normal[1] > WALKABLE_NORMAL_Y)) {
+			continue;
+		}
+		if (! found || (obstacle.distance < nearest.distance)) {
+			found = true;
+			nearest = obstacle;
+		}
+	}
+	return found;
+}
+
+/**
+ * @brief Moves the walker horizontally, stopping at walls and sliding along them.
+ */
+void move(const float x, const float z)
+{
+	const float length = sqrtf(x * x + z * z);
+	if (length <= 0.0f) {
+		return;
+	}
+	const float direction_x = x / length;
+	const float direction_z = z / length;
+
+	game::obstacle_t wall;
+	if (! physics_supported || ! find_wall(direction_x, direction_z, length + BODY_RADIUS, wall)) {
+		walk.position[0] += x;
+		walk.position[2] += z;
+		return;
+	}
+
+	// Go as far as the wall allows, then spend the rest of the step along the wall.
+
+	float advance = wall.distance - BODY_RADIUS;
+	if (advance < 0.0f) {
+		advance = 0.0f;
+	}
+	walk.position[0] += direction_x * advance;
+	walk.position[2] += direction_z * advance;
+
+	const float normal_length = sqrtf(wall.normal[0] * wall.normal[0] + wall.normal[2] * wall.normal[2]);
+	if (normal_length < 0.001f) {
+		return;
+	}
+	const float normal_x = wall.normal[0] / normal_length;
+	const float normal_z = wall.normal[2] / normal_length;
+
+	const float remaining = length - advance;
+	const float into_wall = (direction_x * normal_x + direction_z * normal_z) * remaining;
+	const float slide_x = direction_x * remaining - normal_x * into_wall;
+	const float slide_z = direction_z * remaining - normal_z * into_wall;
+	const float slide_length = sqrtf(slide_x * slide_x + slide_z * slide_z);
+	if (slide_length < 0.0001f) {
+		return;
+	}
+
+	game::obstacle_t other_wall;
+	if (! find_wall(slide_x / slide_length, slide_z / slide_length, slide_length + BODY_RADIUS, other_wall)) {
+		walk.position[0] += slide_x;
+		walk.position[2] += slide_z;
+	}
+}
+
+/**
+ * @brief Pushes the walker away from walls closer than the body radius in any direction.
+ *
+ * Moving only checks ahead, so walking along a wall or turning next to one could
+ * otherwise put the eyes inside it.
+ */
+void keep_clear_of_walls(void)
+{
+	if (! physics_supported) {
+		return;
+	}
+	for (int i = 0; i < CLEARANCE_DIRECTIONS; ++i) {
+		const float angle = TWO_PI * static_cast<float>(i) / static_cast<float>(CLEARANCE_DIRECTIONS);
+		const float direction_x = cosf(angle);
+		const float direction_z = sinf(angle);
+
+		game::obstacle_t wall;
+		if (find_wall(direction_x, direction_z, BODY_RADIUS, wall)) {
+			const float overlap = BODY_RADIUS - wall.distance;
+			walk.position[0] -= direction_x * overlap;
+			walk.position[2] -= direction_z * overlap;
+		}
 	}
 }
 
@@ -177,9 +369,12 @@ void start_walk(void)
 	walk.position[1] = truck.y;
 	walk.position[2] = truck.z - exit_x * sin_yaw + exit_z * cos_yaw;
 
+	walk.fall_speed = 0.0f;
+	walk.ground_found = true;
+	walk.ground_reports = 0;
 	locate_physics();
+	activate_surroundings();
 	follow_ground(0.0f);
-	log_message(SCS_LOG_TYPE_message, "stepping out at height %.2f, truck is at %.2f", walk.position[1], truck.y);
 
 	walk.placement = reference;
 	walk.yaw = truck_yaw;
@@ -216,11 +411,23 @@ void update_walk(void)
 		frame_time = MAX_FRAME_TIME;
 	}
 
+	// Menus need the keyboard and the mouse, so the game has them while it is paused.
+
+	const bool controllable = ! game_paused && input::game_has_focus();
+	if (controllable) {
+		input::capture_start();
+	}
+	else {
+		input::capture_stop();
+	}
+
 	long mouse_x = 0;
 	long mouse_y = 0;
 	input::take_mouse_delta(mouse_x, mouse_y);
 
-	if (! game_paused && input::game_has_focus()) {
+	if (controllable) {
+		activate_surroundings();
+
 		walk.yaw -= static_cast<float>(mouse_x) * MOUSE_SENSITIVITY;
 		walk.pitch -= static_cast<float>(mouse_y) * MOUSE_SENSITIVITY;
 		if (walk.pitch > MAX_PITCH) {
@@ -245,14 +452,14 @@ void update_walk(void)
 
 			// Forward is (-sin, -cos) and right is (cos, -sin) in the X/Z plane.
 
-			walk.position[0] += (-sin_yaw * forward + cos_yaw * right) * step;
-			walk.position[2] += (-cos_yaw * forward - sin_yaw * right) * step;
+			move((-sin_yaw * forward + cos_yaw * right) * step, (-cos_yaw * forward - sin_yaw * right) * step);
 		}
 
 		walk.time_since_locate += frame_time;
 		if (walk.time_since_locate >= PHYSICS_LOCATE_INTERVAL) {
 			locate_physics();
 		}
+		keep_clear_of_walls();
 		follow_ground(frame_time);
 		update_placement();
 	}
@@ -266,18 +473,47 @@ void on_toggle_pressed(void)
 		stop_walk();
 		return;
 	}
+
+	// The log is the only place a message can go for now, so a refusal also beeps.
+
+	const char *refusal = NULL;
 	if (game_paused) {
-		return;
+		refusal = "the game is paused";
 	}
-	if (! camera_supported) {
-		log_message(SCS_LOG_TYPE_warning, "walking is not available on this game build");
-		return;
+	else if (! camera_supported) {
+		refusal = "walking is not available on this game build";
 	}
-	if (! can_leave_truck()) {
-		log_message(SCS_LOG_TYPE_warning, "stop and set the parking brake before getting out");
+	else if (! can_leave_truck()) {
+		refusal = "stop and set the parking brake before getting out";
+	}
+	if (refusal) {
+		log_message(SCS_LOG_TYPE_warning, "%s", refusal);
+		MessageBeep(MB_ICONWARNING);
 		return;
 	}
 	start_walk();
+}
+
+/**
+ * @brief Diagnostics while the collision world is being investigated.
+ */
+void update_trace(void)
+{
+	if (! physics_supported) {
+		return;
+	}
+	const scs_value_dvector_t &truck = telemetry.truck_placement.position;
+	game::trace_flush(truck.x, truck.z);
+
+	static ULONGLONG last_census = 0;
+	const ULONGLONG now = GetTickCount64();
+	if (game_paused || (now - last_census < TRACE_CENSUS_INTERVAL_MS)) {
+		return;
+	}
+	last_census = now;
+	if (walk.active) {
+		game::trace_census("walking", truck.x, truck.z, walk.position[0], walk.position[2]);
+	}
 }
 
 // Events.
@@ -290,6 +526,7 @@ SCSAPI_VOID telemetry_frame_end(const scs_event_t, const void *const, const scs_
 	}
 	toggle_key_was_down = down;
 
+	update_trace();
 	if (walk.active) {
 		update_walk();
 	}
@@ -298,6 +535,12 @@ SCSAPI_VOID telemetry_frame_end(const scs_event_t, const void *const, const scs_
 SCSAPI_VOID telemetry_pause(const scs_event_t event, const void *const, const scs_context_t)
 {
 	game_paused = (event == SCS_TELEMETRY_EVENT_paused);
+
+	// Frames might not be reported while paused, so the menu gets its input back here.
+
+	if (game_paused && walk.active) {
+		input::capture_stop();
+	}
 }
 
 /**
@@ -434,6 +677,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 SCSAPI_VOID scs_telemetry_shutdown(void)
 {
 	stop_walk();
+	game::trace_stop();
 	input::shutdown();
 	game_log = NULL;
 }

@@ -26,27 +26,30 @@ std::atomic<long> mouse_y(0);
 HWND    game_window = NULL;
 WNDPROC game_window_procedure = NULL;
 
+// The game's own registration for raw mouse input, put back when capturing ends.
+RAWINPUTDEVICE game_mouse_registration = {};
+bool           game_mouse_registered = false;
+
 /**
- * @brief Keys used for walking. The game binds the same keys to driving.
+ * @brief Keys the game still gets while on foot: menus, the console and screenshots.
+ *
+ * Everything else would drive the truck (W revs the engine, Space releases the parking brake).
  */
-bool is_walk_key(const WPARAM virtual_key)
+bool is_game_key(const WPARAM virtual_key)
 {
-	switch (virtual_key) {
-		case 'W':
-		case 'A':
-		case 'S':
-		case 'D':
-		case VK_SHIFT: {
-			return true;
-		}
-	}
-	return false;
+	return
+		(virtual_key == VK_ESCAPE) ||
+		(virtual_key == VK_OEM_3) ||
+		(virtual_key == VK_SNAPSHOT) ||
+		(virtual_key == VK_PAUSE) ||
+		((virtual_key >= VK_F1) && (virtual_key <= VK_F24))
+	;
 }
 
 LRESULT CALLBACK game_window_filter(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 {
 	const bool key_message = (message == WM_KEYDOWN) || (message == WM_KEYUP);
-	if (key_message && capturing && is_walk_key(wparam)) {
+	if (key_message && capturing && ! is_game_key(wparam)) {
 		return 0;
 	}
 	return CallWindowProcW(game_window_procedure, window, message, wparam, lparam);
@@ -93,11 +96,36 @@ DWORD WINAPI listener_main(LPVOID)
 
 void set_mouse_listening(const bool enabled)
 {
+	// A process has one raw input registration per device type, so listening takes the
+	// mouse away from the game. Remember what the game had and give it back afterwards.
+
 	RAWINPUTDEVICE device = {};
 	device.usUsagePage = USAGE_PAGE_GENERIC;
 	device.usUsage = USAGE_MOUSE;
-	device.dwFlags = enabled ? RIDEV_INPUTSINK : RIDEV_REMOVE;
-	device.hwndTarget = enabled ? listener_window : NULL;
+
+	if (enabled) {
+		RAWINPUTDEVICE registered[16];
+		UINT count = 16;
+		const UINT found = GetRegisteredRawInputDevices(registered, &count, sizeof(RAWINPUTDEVICE));
+		game_mouse_registered = false;
+		for (UINT i = 0; (found != static_cast<UINT>(-1)) && (i < found); ++i) {
+			const bool mouse = (registered[i].usUsagePage == USAGE_PAGE_GENERIC) && (registered[i].usUsage == USAGE_MOUSE);
+			if (mouse && (registered[i].hwndTarget != listener_window)) {
+				game_mouse_registration = registered[i];
+				game_mouse_registered = true;
+			}
+		}
+		device.dwFlags = RIDEV_INPUTSINK;
+		device.hwndTarget = listener_window;
+	}
+	else if (game_mouse_registered) {
+		device = game_mouse_registration;
+	}
+	else {
+		device.dwFlags = RIDEV_REMOVE;
+		device.hwndTarget = NULL;
+	}
+
 	if (! RegisterRawInputDevices(&device, 1, sizeof(device))) {
 		log_message(SCS_LOG_TYPE_warning, "unable to %s mouse listening (error %lu)", enabled ? "start" : "stop", GetLastError());
 	}
