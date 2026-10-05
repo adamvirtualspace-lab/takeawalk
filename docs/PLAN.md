@@ -86,6 +86,59 @@ Depends on phase 2.2-2.4. See RESEARCH.md section 4b.
 Start with a game NPC (`meso` skeleton, existing walk and idle clips) so no art is
 needed until 2b.5. If 2b.1 fails, the fallback is first person with a body shadow only.
 
+## Phase 2c: Convoy hangout (after 2b.2)
+
+Goal: friends in the same Convoy session leave their trucks and see each other walking.
+TruckersMP is out of scope (it blocks plugins).
+
+Our plugin runs its own small network link between friends. It does not touch Convoy's
+netcode; Convoy keeps syncing the trucks as usual. Each player sends position, facing
+and state (walking, running, crouching, in truck) about 20 times a second. Receivers
+smooth it between updates.
+
+| Milestone | Content |
+|---|---|
+| 2c.0 Check | Everyone runs `takeawalk.dll` in a Convoy session (same game version, same mod list). Confirm the plugin loads and works there |
+| 2c.1 Link | Join by session code, through direct connection or a tiny relay. Exchange player name and state |
+| 2c.2 Nameplates | Draw each friend's name and a marker at their position (SPF UI + Camera API). No character model needed, so this does not wait on 2b.1 |
+| 2c.3 Bodies | Show each friend with the 2b character: one more actor per friend, fed from the network |
+| 2c.4 Animation | Play walk/idle/crouch from the received state, scaled to speed |
+| 2c.5 Extras | Sit in a friend's passenger seat, emotes |
+
+Depends on: phase 2 (walking) for 2c.0-2c.2, and 2b.1/2b.2 for 2c.3 onward. If 2b.1
+fails, nameplates are the fallback, or our own mesh drawn through SPF's graphics hook.
+
+Known limits:
+
+- Parked trucks, trailers and cars have no collision for walkers (the game has
+  none for them), so people walk through each other's trucks unless we add simple
+  boxes ourselves.
+- Every player needs the same game version and plugin version.
+- Game updates can break the reverse-engineered parts for everyone at once.
+
+### Side experiment: a "person vehicle" (data mod, no plugin)
+
+Idea: a vehicle mod whose model is a person. Convoy would sync it for free, the
+chase camera gives third person, and vehicle physics gives collision, including
+against other trucks.
+
+Worth a short test because it needs no reverse engineering: a vehicle definition with
+a person model, tiny wheelbase, low top speed, wheels hidden. The 1.61 SDK has
+`car_job` events, so the game already handles non-truck player vehicles. How switching
+into one works needs checking.
+
+Why it can't replace phase 2:
+
+- You don't get out of your truck; you switch vehicles. That probably only happens at
+  a garage, so your truck can't stay parked where you are.
+- It moves like a car: turning circle, no sidestep, momentum.
+- Legs won't animate to walking. At best wheel- or steering-driven parts move, so the
+  person slides.
+- The game still treats you as a vehicle: fines, tolls, damage, AI traffic.
+
+If the test is fun, it could ship as a separate "Convoy costume" mod. Low risk: it's
+a data mod and touches nothing else.
+
 ## Phase 3: release
 
 - Pack the data mod as `.scs` (zip, no `.git`, no `docs/`, no `plugin/`).
@@ -117,5 +170,8 @@ docs/                 research and plans
 
 1. Scope: is the constrained data-mod version enough, or is full free-roam walking
    the goal? (Decides whether phase 2 happens.)
-2. Should it stay compatible with multiplayer (Convoy/TruckersMP)? If yes, data mod only.
+2. ~~Should it stay compatible with multiplayer (Convoy/TruckersMP)? If yes, data mod only.~~
+   Decided 2026-10-05: Convoy with the plugin is a goal (phase 2c). TruckersMP is not.
 3. ETS2 only, or ATS as well? (Same engine; mostly a packaging question.)
+4. Build the plugin on SPF-Framework instead of the raw SDK? Planned to try later,
+   before 2.2 (see RESEARCH.md section 6).
