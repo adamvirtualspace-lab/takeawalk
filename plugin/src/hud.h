@@ -13,6 +13,10 @@ namespace hud {
 void recover(void);
 
 void hide(void);
-void restore(void);
+
+/**
+ * @param game_closing The plugin is being shut down, usually because the game quits.
+ */
+void restore(bool game_closing);
 
 } // namespace hud

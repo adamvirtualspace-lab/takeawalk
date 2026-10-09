@@ -325,6 +325,12 @@ confirmed**.
 - v0.9 read the text at +0x28 and so got the default: it reported `g_adviser_alpha`
   as 0.8 when the profile had 0.42, and "restored" 0.8.
 - `g_adviser_alpha 0` does not hide the route advisor.
+- `g_adviser_widget_tachometer 0` hides the speedometer at once (confirmed in game);
+  3 is the normal value.
+- Console variables are saved with the profile when the game quits. Commands run from
+  the plugin's shutdown come too late: after a session that ended on foot the profile
+  had the on-foot values (tachometer 0, hints 0). The restore file is therefore kept
+  when the plugin shuts down while on foot and applied at the next start.
 - HUD variables in 1.61 (from the exe's strings; meanings partly from forum posts):
   `g_adviser_alpha`, `g_adviser_keep_hidden`, `g_adviser_widget_*` (tachometer,
   minimap, job_info, ...), `g_show_tutorial_hints`, `g_show_game_elements` (the
@@ -357,12 +363,65 @@ From static analysis for v0.10. The barrier bypass is **not yet confirmed in gam
   by RVA 0x1656210. Its PhysX actor is at +0x98. The plugin assumes the PhysX actor's
   `userData` (+0x10) points back to the game's actor and checks that by comparing
   +0x98; a ray hit whose group is 0x10 is skipped and the ray continues behind it.
-- **The barrier bypass did not work in game (2026-10-09):** the user is still stopped
-  at X barriers. The game data does mark the "dead end" (X symbols), "invisible wall"
-  and "direction blocker" schemes as player limiters, so either the group is not 0x10
-  at run time (the function first tests another flag at +0x78 of the scheme, which
-  gives group 3) or what stops the walker is a different object. A probe (P) at a
-  barrier will show the hit's class and flags.
+- **Correction (probed in game 2026-10-10):** X barriers are static actors with flags
+  ending in 0xC7, that is group 3 and type 7 (bits 0-5), not group 0x10. Ordinary
+  ground and walls are 0x41 (group 1, type 1); a parked car's dynamic actor is 0x109.
+  The attribute table rows put the offset before the name, so the offsets quoted
+  above are one row late: `player_limiter` is the bool at +0x78 of `building_scheme_u`
+  and `player_trigger` the one at +0x79. In RVA 0xB026FF `player_limiter` therefore
+  gives group 3 with the type taken from the global at RVA 0x304570C, and
+  `player_trigger` gives group 0x10. v0.12 ignores hits with group 3 and type 7.
+  **Not yet confirmed in game.**
+- v0.11's parked-car hook works (user: "almost all of the parked cars are
+  colliding"), and the game exits cleanly with it. Two cars in a shop's parking bays
+  had no body even with the walker next to them: either scenery models rather than
+  traffic vehicles, or vehicles failing the other condition in RVA 0xB908C0
+  (`flags & 0xE0000 == 0xE0000` at +0x1B8 of the vehicle's data). Not investigated.
+- v0.12's barrier bypass is **confirmed in game** (2026-10-10): the walker passes
+  through X barriers.
+- **Signs and poles are not solid for the walker until the truck comes near.**
+  Worked out by static analysis on 2026-10-10; the fix in v0.14 is **not yet confirmed
+  in game**.
+  - The sign item class (vtable RVA 0x229A4B0, map item type 36) has an empty function
+    at +0x1B8, so the item visitor of `489E10` does nothing for signs.
+  - The world object keeps two lists of items which get a call every frame: the array
+    at world+0x600 and the one at world+0x650. Changes to them are collected in
+    pending arrays (world+0x628 and world+0x678, 16-byte entries: item, then a byte
+    which is 1 to add and 0 to remove) and merged by RVA 0x47BC50. RVA 0x47BAF0 and
+    RVA 0x47BA60 push a **removal** for the first and the second list (an earlier
+    note here called 0x47BA60 a queue of items to build; that was wrong). Additions
+    are written inline, for instance RVA 0x457430 for the second list. Item flags
+    0x10 and 0x20 (+0x38) say the item is in the first or the second list.
+  - RVA 0x47AF10, called from the main loop, calls the function at +0x190 of every
+    item in the second list. A sign is in that list while it is shown (added by its
+    function at +0x1B0, RVA 0x6E2E10; removed by its reset at +0x1C0, RVA 0x6E3020).
+  - The sign's +0x190 is RVA 0x6E31A0. Every frame it asks the world for the player
+    position (world virtual function +0x178, RVA 0x48B970: the object at
+    world+0x31B0, then its +0x18, then that one's virtual function +0x100 gives a
+    placement), measures the distance to the sign's own placement at +0x7C (RVA
+    0x12FAF0) and compares it with 1225.0 (the float at RVA 0x251D25C): below, it
+    creates the sign's collision object (RVA 0x486190, kept at +0xA8) and on later
+    frames builds it (RVA 0x6E5F30, where the actor gets added: 6E7702 <- 6E3291 <-
+    47AFCD <- 4CFDD0); at or beyond, it destroys it (RVA 0x486360). So **a sign is
+    solid within 35 m of the truck**, with no memory of having been solid.
+  - Sign flags (+0x38): bit 16 is set when the sign has been knocked over (contact
+    callback at RVA 0x6E4D30), bit 18 has to be set and bit 22 clear for the test.
+  - Compounds (class vtable RVA 0x22B7AF8, map item type 40, a group of signs and
+    models stored as one item) do the same in their +0x190, RVA 0x7F8E30, with the
+    same 1225.0. Their position is at the node pointed to by +0x50: three int32 in
+    1/256 m, where X and Z pack the chunk in the upper 15 bits, so read as a whole
+    they are simply the world coordinate times 256.
+  - The world's player position is asked for in at least 24 places, so replacing it
+    outright is not safe. v0.14 (`game_scenery.cpp`) hooks the two update functions
+    and the position function: while one of the updates runs for an item within 25 m
+    of the walker, the position function answers with the walker's position on that
+    thread; everything else still gets the truck. A function which returns the
+    orientation (RVA 0x48B9E0) starts with the same 35 bytes as the position function,
+    so that signature runs on to the call which differs.
+  - Probed near the truck, poles are static actors with flags ending 0x60 (group 1,
+    type 0x20), and one was dynamic with flags 0x80.
+  - The trace (`trace_collision`) still hooks RVA 0x47BA60 and logs the class, type
+    and call stack of every distinct way an item is taken off the second list.
 - Workshop mods that remove the X barriers do it for vehicles too. One of them is
   marked incompatible and removed from the Workshop. Ours only affects the walker.
 - **Open: parked cars are not solid for the walker** although the truck collides with

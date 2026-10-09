@@ -21,6 +21,7 @@
 #include "game_camera.h"
 #include "game_console.h"
 #include "game_physics.h"
+#include "game_scenery.h"
 #include "game_traffic.h"
 #include "hud.h"
 #include "input.h"
@@ -29,7 +30,7 @@
 #include "physics_trace.h"
 #include "sound.h"
 
-#define TAKEAWALK_VERSION "0.11"
+#define TAKEAWALK_VERSION "0.14"
 
 namespace {
 
@@ -291,6 +292,10 @@ void activate_surroundings(void)
 		// now near this position too.
 
 		game::traffic_set_walker(walk.position[0], walk.position[1], walk.position[2]);
+
+		// So are signs and poles.
+
+		game::scenery_set_walker(walk.position[0], walk.position[1], walk.position[2], ACTIVATION_RADIUS);
 	}
 }
 
@@ -576,7 +581,7 @@ void start_walk(void)
 	overlay::show("On foot.  WASD move  \xC2\xB7  Shift run  \xC2\xB7  Ctrl crouch  \xC2\xB7  Space jump  \xC2\xB7  F9 at the door to get in");
 }
 
-void stop_walk(void)
+void stop_walk(const bool game_closing)
 {
 	if (! walk.active) {
 		return;
@@ -585,7 +590,8 @@ void stop_walk(void)
 	input::capture_stop();
 	game::camera_release();
 	game::traffic_clear_walker();
-	hud::restore();
+	game::scenery_clear_walker();
+	hud::restore(game_closing);
 	overlay::hide();
 	log_message(SCS_LOG_TYPE_message, "back in the truck");
 }
@@ -688,7 +694,7 @@ void on_toggle_pressed(void)
 		door_position(door);
 		const double distance = distance_to(door[0], door[2]);
 		if (distance <= ENTER_DISTANCE) {
-			stop_walk();
+			stop_walk(false);
 		}
 		else {
 			force_return_armed = true;
@@ -783,7 +789,7 @@ SCSAPI_VOID telemetry_frame_end(const scs_event_t, const void *const, const scs_
 	}
 	else if (force_return_armed && walk.active && (now - toggle_pressed_at >= FORCE_RETURN_HOLD_MS)) {
 		force_return_armed = false;
-		stop_walk();
+		stop_walk(false);
 	}
 	toggle_key_was_down = down;
 
@@ -930,6 +936,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 	game::physics_ignore_barriers(config.ignore_barriers);
 	if (physics_supported) {
 		game::traffic_attach();
+		game::scenery_attach();
 	}
 	game::console_attach();
 	overlay::init();
@@ -954,8 +961,9 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
  */
 SCSAPI_VOID scs_telemetry_shutdown(void)
 {
-	stop_walk();
+	stop_walk(true);
 	game::traffic_detach();
+	game::scenery_detach();
 	game::trace_stop();
 	sound::shutdown();
 	overlay::shutdown();

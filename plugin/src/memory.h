@@ -44,6 +44,36 @@ bool write(uint8_t *const address, const T &value)
 }
 
 /**
+ * @brief A game function redirected to one of the plugin's.
+ */
+struct hook_t
+{
+	uint8_t *function;
+	uint8_t  saved[32];
+	size_t   moved_size;
+
+	/**
+	 * @brief Calls the game's function: its first instructions, moved here, then a jump back into it.
+	 */
+	void    *original;
+};
+
+/**
+ * @brief Makes a game function jump to a replacement.
+ *
+ * @param moved_size Length of the whole instructions at the start of the function which
+ * get overwritten: at least 14 bytes, at most 32, and none of them may depend on where
+ * it runs (no relative jumps, calls or RIP-relative operands).
+ */
+bool hook_install(hook_t &hook, uint8_t *function, size_t moved_size, const void *replacement);
+
+/**
+ * @brief Puts the function's first instructions back. The moved copy is kept, as a
+ * thread may still be running it.
+ */
+void hook_remove(hook_t &hook);
+
+/**
  * @brief Writes a hex dump of game memory to the log.
  */
 void dump(const char *label, const uint8_t *address, size_t size);

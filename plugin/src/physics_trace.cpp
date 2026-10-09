@@ -120,6 +120,36 @@ const int MAX_PENDING_CHANGES = 64;
 // Most state changes written to the log in one session.
 const int MAX_LOGGED_CHANGES = 400;
 
+// Signs and poles do not get their collision through the item visitor. While shown they
+// are in a list of the world object whose items get a call every frame, and that call
+// builds or drops their collision. This function takes an item off that list (it was
+// first taken for the one which puts items on it, hence "queue" in the names below).
+// Its first four instructions (18 bytes) do not depend on where they run.
+const size_t QUEUE_FUNCTION_RVA = 0x47BA60;
+const uint8_t QUEUE_FUNCTION_START[] = { 0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8D, 0x99, 0x78, 0x06, 0x00, 0x00, 0x48, 0x89, 0x54, 0x24, 0x20 };
+
+// Map item: its type as in the map format (the sign class has its vtable at RVA 0x229A4B0).
+const size_t ITEM_TYPE = 0x0A;	// u8
+
+struct queue_path_t
+{
+	ULONG          hash;
+	const uint8_t *item_class;
+	uint8_t        item_type;
+	USHORT         depth;
+	void          *frames[STACK_DEPTH];
+	bool           logged;
+	unsigned       calls;
+};
+
+typedef void (*queue_function_t)(void *world, void *item);
+
+const int MAX_QUEUE_PATHS = 128;
+
+memory::hook_t queue_hook = {};
+queue_path_t   queue_paths[MAX_QUEUE_PATHS];
+int            queue_path_count = 0;
+
 actor_function_t original_set_state = NULL;
 state_path_t     state_paths[MAX_STATE_PATHS];
 int              state_path_count = 0;
@@ -307,6 +337,49 @@ void note_state(void *const vehicle, const uint32_t new_state)
 	LeaveCriticalSection(&lock);
 }
 
+/**
+ * @brief Notes an item being taken off the per-frame update list, and who did it.
+ */
+void note_queue(void *const item)
+{
+	// Other kinds of item go through the same queue, so the class and type are noted too.
+
+	const uint8_t *item_class = NULL;
+	uint8_t item_type = 0;
+	if (! memory::read(static_cast<const uint8_t *>(item), item_class) || ! memory::read(static_cast<const uint8_t *>(item) + ITEM_TYPE, item_type)) {
+		return;
+	}
+	void *frames[STACK_DEPTH];
+	ULONG hash = 0;
+	const USHORT depth = RtlCaptureStackBackTrace(1, STACK_DEPTH, frames, &hash);
+
+	EnterCriticalSection(&lock);
+	int index = 0;
+	while ((index < queue_path_count) && ((queue_paths[index].hash != hash) || (queue_paths[index].item_class != item_class))) {
+		++index;
+	}
+	if ((index == queue_path_count) && (queue_path_count < MAX_QUEUE_PATHS)) {
+		queue_path_t &path = queue_paths[queue_path_count++];
+		path.hash = hash;
+		path.item_class = item_class;
+		path.item_type = item_type;
+		path.depth = depth;
+		memcpy(path.frames, frames, sizeof(frames));
+		path.logged = false;
+		path.calls = 0;
+	}
+	if (index < queue_path_count) {
+		++queue_paths[index].calls;
+	}
+	LeaveCriticalSection(&lock);
+}
+
+void hooked_queue(void *world, void *item)
+{
+	note_queue(item);
+	reinterpret_cast<queue_function_t>(queue_hook.original)(world, item);
+}
+
 void *hooked_set_state(void *a, void *b, void *c, void *d)
 {
 	note_state(a, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(b)));
@@ -404,10 +477,19 @@ void trace_start(void)
 	const bool remove_hooked = replace_slot(REMOVE_SLOT_RVA, REMOVE_FUNCTION_RVA, hooked_remove, original_remove);
 	const bool state_hooked = replace_slot(STATE_SLOT_RVA, STATE_FUNCTION_RVA, hooked_set_state, original_set_state);
 	const bool dynamic_hooked = replace_slot(ADD_DYNAMIC_SLOT_RVA, ADD_DYNAMIC_FUNCTION_RVA, hooked_add_dynamic, original_add_dynamic);
+
+	queue_path_count = 0;
+	uint8_t *const queue_function = exe_base() + QUEUE_FUNCTION_RVA;
+	uint8_t start[sizeof(QUEUE_FUNCTION_START)];
+	const bool queue_hooked =
+		memory::safe_copy(start, queue_function, sizeof(start)) &&
+		(memcmp(start, QUEUE_FUNCTION_START, sizeof(start)) == 0) &&
+		memory::hook_install(queue_hook, queue_function, sizeof(QUEUE_FUNCTION_START), reinterpret_cast<const void *>(&hooked_queue))
+	;
 	log_message(
 		SCS_LOG_TYPE_message,
-		"trace: watching static actors being added (%s) and removed (%s), dynamic actors being added (%s), traffic vehicles changing state (%s)",
-		add_hooked ? "yes" : "no", remove_hooked ? "yes" : "no", dynamic_hooked ? "yes" : "no", state_hooked ? "yes" : "no"
+		"trace: watching static actors being added (%s) and removed (%s), dynamic actors being added (%s), traffic vehicles changing state (%s), items leaving the update list (%s)",
+		add_hooked ? "yes" : "no", remove_hooked ? "yes" : "no", dynamic_hooked ? "yes" : "no", state_hooked ? "yes" : "no", queue_hooked ? "yes" : "no"
 	);
 }
 
@@ -420,6 +502,7 @@ void trace_stop(void)
 	restore_slot(REMOVE_SLOT_RVA, original_remove);
 	restore_slot(STATE_SLOT_RVA, original_set_state);
 	restore_slot(ADD_DYNAMIC_SLOT_RVA, original_add_dynamic);
+	memory::hook_remove(queue_hook);
 	started = false;
 	DeleteCriticalSection(&lock);
 }
@@ -476,6 +559,26 @@ void trace_flush(const double truck_x, const double truck_z)
 			length += snprintf(text + length, sizeof(text) - length, " %zX", rva);
 		}
 		log_message(SCS_LOG_TYPE_message, "trace: %s%s call path %d:%s", stack.dynamic ? "dynamic " : "", stack.removal ? "removal" : "addition", i, text);
+	}
+
+	for (int i = 0; i < queue_path_count; ++i) {
+		queue_path_t &path = queue_paths[i];
+		if (path.logged) {
+			continue;
+		}
+		path.logged = true;
+
+		char text[STACK_DEPTH * 10 + 1] = "";
+		size_t length = 0;
+		for (USHORT frame = 0; frame < path.depth; ++frame) {
+			const size_t rva = static_cast<size_t>(static_cast<uint8_t *>(path.frames[frame]) - exe_base());
+			length += snprintf(text + length, sizeof(text) - length, " %zX", rva);
+		}
+		log_message(
+			SCS_LOG_TYPE_message,
+			"trace: item of class %zX type %u taken off the update list, call path %d:%s",
+			static_cast<size_t>(path.item_class - exe_base()), path.item_type, i, text
+		);
 	}
 
 	for (int i = 0; i < state_path_count; ++i) {

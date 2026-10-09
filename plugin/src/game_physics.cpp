@@ -35,13 +35,16 @@ const size_t ACTIVATION_ACTIVATE_CALL = 20;
 const size_t PX_ACTOR_USER_DATA = 0x10;		// The game's actor.
 
 // The game's own actor object, which wraps the PhysX one.
-const size_t GAME_ACTOR_FLAGS = 0x90;		// u32, the collision group is in bits 6 to 11
+const size_t GAME_ACTOR_FLAGS = 0x90;		// u32: collision type in bits 0 to 5, group in bits 6 to 11
 const size_t GAME_ACTOR_PX_ACTOR = 0x98;	// PxRigidActor *
+const uint32_t GAME_ACTOR_TYPE_MASK = 0x3F;
 const uint32_t GAME_ACTOR_GROUP_SHIFT = 6;
 const uint32_t GAME_ACTOR_GROUP_MASK = 0x3F;
 
-// Group of the invisible walls behind the X symbols (building schemes with player_limiter).
-const uint32_t GROUP_PLAYER_LIMITER = 0x10;
+// What the invisible walls behind the X symbols (building schemes with player_limiter)
+// have: measured in game as flags ...C7. Ordinary ground and walls are group 1, type 1.
+const uint32_t GROUP_PLAYER_LIMITER = 3;
+const uint32_t TYPE_PLAYER_LIMITER = 7;
 
 // How a ray gets past an ignored barrier: restarts just behind its surface (m), in
 // longer strides while inside it (m), a limited number of times.
@@ -229,11 +232,11 @@ int guarded_raycast(void *const scene, const vec3_t *const origin, const vec3_t 
 }
 
 /**
- * @brief Collision group of the game's actor behind a PhysX actor.
+ * @brief Collision group and type of the game's actor behind a PhysX actor.
  *
  * False if the PhysX actor does not belong to a game actor of the expected layout.
  */
-bool collision_group(void *const px_actor, uint32_t &group)
+bool collision_group(void *const px_actor, uint32_t &group, uint32_t &type)
 {
 	uint8_t *game_actor = NULL;
 	uint8_t *px_actor_of_game_actor = NULL;
@@ -247,7 +250,18 @@ bool collision_group(void *const px_actor, uint32_t &group)
 		return false;
 	}
 	group = (flags >> GAME_ACTOR_GROUP_SHIFT) & GAME_ACTOR_GROUP_MASK;
+	type = flags & GAME_ACTOR_TYPE_MASK;
 	return true;
+}
+
+/**
+ * @brief Whether a PhysX actor is one of the invisible walls which keep vehicles on the map.
+ */
+bool is_player_limiter(void *const px_actor)
+{
+	uint32_t group = 0;
+	uint32_t type = 0;
+	return collision_group(px_actor, group, type) && (group == GROUP_PLAYER_LIMITER) && (type == TYPE_PLAYER_LIMITER);
 }
 
 /**
@@ -302,8 +316,7 @@ bool raycast(const vec3_t &origin, const vec3_t &direction, const float distance
 		if (! raycast_once(from, direction, remaining, kinds, hit)) {
 			return false;
 		}
-		uint32_t group = 0;
-		if (! barriers_ignored || ! collision_group(hit.actor, group) || (group != GROUP_PLAYER_LIMITER)) {
+		if (! barriers_ignored || ! is_player_limiter(hit.actor)) {
 			closest = hit;
 			closest.distance += travelled;
 			return true;
@@ -618,7 +631,8 @@ bool physics_describe(const double x, const double y, const double z, const floa
 		actor = game_actor;
 	}
 	uint32_t group = 0;
-	const bool group_known = collision_group(hit.actor, group);
+	uint32_t type = 0;
+	const bool group_known = collision_group(hit.actor, group, type);
 
 	snprintf(
 		text, capacity,

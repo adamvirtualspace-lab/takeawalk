@@ -120,7 +120,7 @@ void hide(void)
 	}
 }
 
-void restore(void)
+void restore(const bool game_closing)
 {
 	if (! hidden) {
 		return;
@@ -132,7 +132,13 @@ void restore(void)
 			setting.changed = false;
 		}
 	}
-	delete_restore_file();
+
+	// While the game closes it may already have saved its settings, with the HUD
+	// hidden. The file then stays, so the next session puts them right.
+
+	if (! game_closing) {
+		delete_restore_file();
+	}
 }
 
 } // namespace hud
