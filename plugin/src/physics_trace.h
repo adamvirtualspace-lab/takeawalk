@@ -13,6 +13,13 @@ void trace_start(void);
 void trace_stop(void);
 
 /**
+ * @brief Number of the logged call path which added one of the game's actor objects to the scene.
+ *
+ * -1 if the trace is off or the actor was added before it started.
+ */
+int trace_creation_path(void *actor);
+
+/**
  * @brief Writes what was recorded since the last call to the log. Call every frame.
  */
 void trace_flush(double truck_x, double truck_z);

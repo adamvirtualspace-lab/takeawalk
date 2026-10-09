@@ -296,8 +296,122 @@ Measured in game with a diagnostic build (v0.6), then traced in the exe.
 - `489E10` has eight callers, so other vehicles do the same. Collision nothing asks
   for disappears again (the actor count dropped from 105 to 69 after loading); how was
   not traced, the removal did not go through the vtable slot that was watched.
-- v0.7 calls `489E10` every frame with a 25 m box around the walker. **Not yet
-  confirmed in game.**
+- v0.7 calls `489E10` every frame with a 25 m box around the walker. **Confirmed in
+  game on 2026-10-06:** fences, buildings and distant ground are solid; the static
+  actor count rose from about 70 to over 200 while walking and fell back afterwards.
+  The user noticed a slight stutter on a low-end machine (Ryzen 5 7640U, integrated
+  graphics).
+
+## 4f. Console commands and variables
+
+Found by static analysis for v0.9. Running commands is **confirmed in game**
+(2026-10-08: the commands appear in the log and take effect). Reading a variable's live
+value was wrong in v0.9 and is corrected below; the corrected layout is **not yet
+confirmed**.
+
+- The game runs its own command lines through one function, RVA 0x1E08F0, 135 callers.
+  Found from the string "[cmd] '%s' - unknown command". Signature of its start:
+  `40 53 48 81 EC 40 0C 00 00 48 8B D9 83 FA FF 0F 85 ?? ?? ?? ?? 48 8B 11 33 C0 41 B0 20`.
+- Call shape, as in the game's own tiny `screenshot` wrapper at RVA 0x200200:
+  `run(const char **text, int queue)` with `queue = -1` to run at once. The first
+  argument is the address of a pointer to the text.
+- A console variable is a 0x140-byte global structure in `.data`. From its start:
+  name at +0x08 (0x20 bytes), default value text at +0x28 (0x65 bytes), a flag at
+  +0xA1 (non-zero: the default is in effect), the set value text at +0xB1 (0x65
+  bytes), a cached integer at +0x118 with its valid flag at +0x116, and at +0x120 a
+  pointer to a variable that replaces this one (followed until null). Read off the
+  integer getter at RVA 0x1CBD70. The plugin finds a variable by scanning the writable
+  sections for its name at 8-byte alignment.
+- v0.9 read the text at +0x28 and so got the default: it reported `g_adviser_alpha`
+  as 0.8 when the profile had 0.42, and "restored" 0.8.
+- `g_adviser_alpha 0` does not hide the route advisor.
+- HUD variables in 1.61 (from the exe's strings; meanings partly from forum posts):
+  `g_adviser_alpha`, `g_adviser_keep_hidden`, `g_adviser_widget_*` (tachometer,
+  minimap, job_info, ...), `g_show_tutorial_hints`, `g_show_game_elements` (the
+  floating world icons), `g_hud_notifications_keep_hidden`, `g_mirrors_keep_hidden`.
+  There is no plain `g_adviser` any more.
+- The game's HUD notifications (`hud_notification_request_t`) were not traced. The
+  "walking camera" text in the dealer is a label set on one UI window, not a general
+  message API, so v0.9 draws its own message window instead (`overlay.cpp`). The
+  window shows over the game on the user's setup (full screen, DX11) without flicker.
+
+## 4g. Map items, invisible barriers and collision groups
+
+From static analysis for v0.10. The barrier bypass is **not yet confirmed in game**.
+
+- The visitor called by `489E10` (section 4e) goes through map items overlapping the
+  box and calls the item's virtual function at +0x1B8 to create its collision. The
+  item's type is the byte at +0x0A (the map format's numbers: 1 terrain, 2 building,
+  3 road, 4 prefab, 5 model, 0x27 bezier patch, 0x2F hookup, ...), flags at +0x38.
+  The player variant (`flag = 0`, RVA 0x4A71D0) skips items with flag bits 0x2400000.
+  The other variant (`flag = 1`, RVA 0x4A7290) only takes types 1, 3, 4 and 0x27
+  (mask at RVA 0x1EA1B90) and is used by the developer camera, not by traffic.
+- The X symbols and the invisible walls behind them are building items whose
+  `building_scheme` has `player_limiter: true` ("invisible wall", "direction blocker",
+  models `/model/wall/invisible.pmd`, `/dlc/dead_end_dlc.pmd`, ...). The attribute is
+  the bool at +0x79 of `building_scheme_u` (from the engine's attribute table).
+- The building item's collision is created at RVA 0xB026FF. It gives the static actor
+  collision group 0x10 when the scheme is a player limiter, otherwise 3 or 1.
+- The game's actor object (`physics_static_actor_physx_t`) keeps flags in the u32 at
+  +0x90: bits 0-5 are set by RVA 0x16561A0, bits 6-11 are the collision group, set
+  by RVA 0x1656210. Its PhysX actor is at +0x98. The plugin assumes the PhysX actor's
+  `userData` (+0x10) points back to the game's actor and checks that by comparing
+  +0x98; a ray hit whose group is 0x10 is skipped and the ray continues behind it.
+- **The barrier bypass did not work in game (2026-10-09):** the user is still stopped
+  at X barriers. The game data does mark the "dead end" (X symbols), "invisible wall"
+  and "direction blocker" schemes as player limiters, so either the group is not 0x10
+  at run time (the function first tests another flag at +0x78 of the scheme, which
+  gives group 3) or what stops the walker is a different object. A probe (P) at a
+  barrier will show the hit's class and flags.
+- Workshop mods that remove the X barriers do it for vehicles too. One of them is
+  marked incompatible and removed from the Workshop. Ours only affects the walker.
+- **Open: parked cars are not solid for the walker** although the truck collides with
+  them. TM Real Walk has the same limit. What is known (probe key in game, 2026-10-09,
+  plus static analysis):
+  - A parked car has no physics body until the truck comes close; then it gets one
+    and keeps it, and the walker collides with it too (user's observation).
+  - The body is a dynamic actor, not a static one: PhysX class vtable RVA 0x2506950,
+    game class vtable RVA 0x2448928, flags 0x149 (group 5). A parked car away from
+    the truck returned no hit at all.
+  - Traffic vehicles are a class with vtable RVA 0x2320BB8. Its virtual function 18
+    (RVA 0xB8EBA0) changes the vehicle's state, stored as u32 at +0x18. It switches on
+    the new state (1 to 6); states 4, 5 and 6 reach RVA 0xB8D6D0, which creates the
+    dynamic actor if the vehicle has none (pointer at +0x190).
+  - Not found yet: what calls that function when the truck approaches, and which
+    state it asks for. No direct callers exist (it is virtual) and a search for
+    constant states passed through the vtable found nothing. v0.10's trace hooks
+    this function and logs each state change with its call stack.
+  - A physical traffic vehicle activates map collision around itself through
+    `489E10`, like the player's truck (call path via RVA 0xB6C3E8).
+  - Traced in game on 2026-10-09: with the state-change hook on, a session next to a
+    parked car logged only six `0 -> 1` changes (moving traffic spawning, call path
+    via RVA 0xB90217). So **parked cars do not go through that function**; they are
+    not this class, or get their body another way.
+  - The game's dynamic actor class has its vtable at RVA 0x2448928; entry 25 (slot
+    RVA 0x24489F0, function RVA 0x163F500) is its `_add_actor_to_scene`. The trace
+    now hooks that as well, so whatever creates a parked car's body shows up with its
+    call stack, and the probe key names the path for the car being looked at.
+  - **Solved by tracing (2026-10-09).** Parked cars are traffic vehicles; their body
+    is added by call paths through RVA 0xB6A50E <- 0xA2964D (inside `0xA295D0(physics
+    part, on)`) <- 0xB909CD. The deciding code is the per-frame vehicle update at RVA
+    0xB908C0: if the vehicle's physics is off and `0x62FD40(manager, vehicle, 625.0)`
+    is true it switches it on; if it is on, the state is below 5 and
+    `0x62FD40(manager, vehicle, 1225.0)` is false it switches it off.
+  - `0x62FD40(manager, vehicle, distance_squared)` returns whether the vehicle, or
+    anything in its chain (next pointer at +0x68), is within the distance of any object
+    in two arrays of the manager (+0x210/+0x218 and +0x238/+0x240: the player's
+    vehicles). Positions are placements at +0x28 (three floats, two int16 chunks). So
+    a traffic vehicle is solid within 25 m of the truck and stops being solid beyond
+    35 m. It has three callers.
+  - v0.11 hooks the start of `0x62FD40` (its first 15 bytes are three register saves
+    and can be moved to a trampoline) and also answers true when the vehicle is
+    within the distance of the walker. **Not yet confirmed in game.**
+  - Functions that create dynamic actors (callers of RVA 0x1651CA0): 0x6E6823,
+    0x7884DD, 0x7E4D8B, 0x862134, 0x873376, 0x9002E3, 0x9D6324, 0xA1C519, 0xB69629
+    (has "[traffic_vehicle]" strings), 0xB81F85, 0xB8E21B, 0xC0C0E8, 0x16CA1C8.
+- The collision group test for barriers only recognises static actors: the game's
+  dynamic actor class keeps its PhysX pointer elsewhere, so its group reads as unknown
+  and it is treated as solid, which is what is wanted.
 
 ## 5. Local environment
 

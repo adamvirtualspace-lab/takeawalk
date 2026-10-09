@@ -3,6 +3,7 @@
 
 #include <float.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "game_camera.h"
@@ -29,6 +30,24 @@ const char *const ACTIVATION_SIGNATURE = "E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48
 const size_t ACTIVATION_MAKE_BOX_CALL = 0;
 const size_t ACTIVATION_WORLD_LOAD = 5;
 const size_t ACTIVATION_ACTIVATE_CALL = 20;
+
+// PxActor
+const size_t PX_ACTOR_USER_DATA = 0x10;		// The game's actor.
+
+// The game's own actor object, which wraps the PhysX one.
+const size_t GAME_ACTOR_FLAGS = 0x90;		// u32, the collision group is in bits 6 to 11
+const size_t GAME_ACTOR_PX_ACTOR = 0x98;	// PxRigidActor *
+const uint32_t GAME_ACTOR_GROUP_SHIFT = 6;
+const uint32_t GAME_ACTOR_GROUP_MASK = 0x3F;
+
+// Group of the invisible walls behind the X symbols (building schemes with player_limiter).
+const uint32_t GROUP_PLAYER_LIMITER = 0x10;
+
+// How a ray gets past an ignored barrier: restarts just behind its surface (m), in
+// longer strides while inside it (m), a limited number of times.
+const float BARRIER_SKIN = 0.05f;
+const float BARRIER_STRIDE = 0.25f;
+const int MAX_BARRIER_PASSES = 16;
 
 // NpPhysics
 const size_t PHYSICS_SCENES_ITEMS = 0x08;	// NpScene **
@@ -170,6 +189,7 @@ activate_collision_t  activate_collision = NULL;
 
 bool faulted = false;
 bool failure_logged = false;
+bool barriers_ignored = false;
 
 bool origin_known = false;
 int  origin_chunk_x = 0;
@@ -209,12 +229,34 @@ int guarded_raycast(void *const scene, const vec3_t *const origin, const vec3_t 
 }
 
 /**
+ * @brief Collision group of the game's actor behind a PhysX actor.
+ *
+ * False if the PhysX actor does not belong to a game actor of the expected layout.
+ */
+bool collision_group(void *const px_actor, uint32_t &group)
+{
+	uint8_t *game_actor = NULL;
+	uint8_t *px_actor_of_game_actor = NULL;
+	uint32_t flags = 0;
+	const bool readable =
+		memory::read(static_cast<const uint8_t *>(px_actor) + PX_ACTOR_USER_DATA, game_actor) && game_actor &&
+		memory::read(game_actor + GAME_ACTOR_PX_ACTOR, px_actor_of_game_actor) && (px_actor_of_game_actor == px_actor) &&
+		memory::read(game_actor + GAME_ACTOR_FLAGS, flags)
+	;
+	if (! readable) {
+		return false;
+	}
+	group = (flags >> GAME_ACTOR_GROUP_SHIFT) & GAME_ACTOR_GROUP_MASK;
+	return true;
+}
+
+/**
  * @brief Casts a ray in physics coordinates through every scene.
  *
  * @param direction Unit vector.
  * @param[out] closest The nearest hit.
  */
-bool raycast(const vec3_t &origin, const vec3_t &direction, const float distance, const uint16_t kinds, raycast_hit_t &closest)
+bool raycast_once(const vec3_t &origin, const vec3_t &direction, const float distance, const uint16_t kinds, raycast_hit_t &closest)
 {
 	if (! raycast_function || faulted) {
 		return false;
@@ -244,6 +286,40 @@ bool raycast(const vec3_t &origin, const vec3_t &direction, const float distance
 		}
 	}
 	return hit;
+}
+
+/**
+ * @brief Casts a ray like raycast_once(), but lets it pass through the invisible
+ * walls which keep vehicles on the map, if those are to be ignored.
+ */
+bool raycast(const vec3_t &origin, const vec3_t &direction, const float distance, const uint16_t kinds, raycast_hit_t &closest)
+{
+	vec3_t from = origin;
+	float remaining = distance;
+	float travelled = 0.0f;
+	for (int pass = 0; (pass < MAX_BARRIER_PASSES) && (remaining > 0.0f); ++pass) {
+		raycast_hit_t hit;
+		if (! raycast_once(from, direction, remaining, kinds, hit)) {
+			return false;
+		}
+		uint32_t group = 0;
+		if (! barriers_ignored || ! collision_group(hit.actor, group) || (group != GROUP_PLAYER_LIMITER)) {
+			closest = hit;
+			closest.distance += travelled;
+			return true;
+		}
+
+		// Carry on from just behind the barrier. A hit at no distance means the ray
+		// started inside it, which calls for a longer stride to get out.
+
+		const float step = hit.distance + ((hit.distance > 0.0f) ? BARRIER_SKIN : BARRIER_STRIDE);
+		from.x += direction.x * step;
+		from.y += direction.y * step;
+		from.z += direction.z * step;
+		travelled += step;
+		remaining -= step;
+	}
+	return false;
 }
 
 /**
@@ -506,6 +582,55 @@ bool physics_origin(int &chunk_x, int &chunk_z)
 	chunk_x = origin_chunk_x;
 	chunk_z = origin_chunk_z;
 	return origin_known;
+}
+
+void physics_ignore_barriers(const bool ignored)
+{
+	barriers_ignored = ignored;
+}
+
+bool physics_describe(const double x, const double y, const double z, const float *const direction, const float distance, char *const text, const size_t capacity, void *&actor)
+{
+	actor = NULL;
+	if (! origin_known) {
+		snprintf(text, capacity, "the physics world has not been located");
+		return false;
+	}
+	const vec3_t origin = { to_physics(x, origin_chunk_x), static_cast<float>(y), to_physics(z, origin_chunk_z) };
+	const vec3_t ray = { direction[0], direction[1], direction[2] };
+	raycast_hit_t hit;
+	if (! raycast_once(origin, ray, distance, QUERY_STATIC | QUERY_DYNAMIC, hit)) {
+		snprintf(text, capacity, "nothing solid within %.0f m", distance);
+		return false;
+	}
+
+	// Class of an object as the address of its table of virtual functions in the exe.
+
+	const uint8_t *const base = reinterpret_cast<const uint8_t *>(GetModuleHandleW(NULL));
+	const uint8_t *px_class = NULL;
+	uint8_t *game_actor = NULL;
+	const uint8_t *game_class = NULL;
+	uint32_t game_flags = 0;
+	memory::read(static_cast<const uint8_t *>(hit.actor), px_class);
+	if (memory::read(static_cast<const uint8_t *>(hit.actor) + PX_ACTOR_USER_DATA, game_actor) && game_actor) {
+		memory::read(game_actor, game_class);
+		memory::read(game_actor + GAME_ACTOR_FLAGS, game_flags);
+		actor = game_actor;
+	}
+	uint32_t group = 0;
+	const bool group_known = collision_group(hit.actor, group);
+
+	snprintf(
+		text, capacity,
+		"solid at %.2f m: PhysX class %zX, game class %zX, flags %08X, group %s%u, surface normal (%.2f, %.2f, %.2f)",
+		hit.distance,
+		px_class ? static_cast<size_t>(px_class - base) : 0,
+		game_class ? static_cast<size_t>(game_class - base) : 0,
+		game_flags,
+		group_known ? "" : "unknown ", group,
+		hit.normal.x, hit.normal.y, hit.normal.z
+	);
+	return true;
 }
 
 bool physics_obstacle(const double x, const double y, const double z, const float direction_x, const float direction_z, const float distance, obstacle_t &obstacle)

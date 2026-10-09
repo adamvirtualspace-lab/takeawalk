@@ -17,17 +17,33 @@
 #include "eurotrucks2/scssdk_eut2.h"
 #include "eurotrucks2/scssdk_telemetry_eut2.h"
 
+#include "config.h"
 #include "game_camera.h"
+#include "game_console.h"
 #include "game_physics.h"
+#include "game_traffic.h"
+#include "hud.h"
 #include "input.h"
 #include "log.h"
+#include "overlay.h"
 #include "physics_trace.h"
+#include "sound.h"
 
-#define TAKEAWALK_VERSION "0.7"
+#define TAKEAWALK_VERSION "0.11"
 
 namespace {
 
 const int   TOGGLE_KEY = VK_F9;
+
+// How close to the spot beside the driver's door the walker has to be to get in (m).
+const float ENTER_DISTANCE = 2.5f;
+
+// Holding the toggle key this long puts the walker back in the cab from anywhere (ms).
+// The way out when stuck or lost.
+const ULONGLONG FORCE_RETURN_HOLD_MS = 1500;
+
+// How often the diagnostics count the static collision in the scene (ms).
+const ULONGLONG CENSUS_INTERVAL_MS = 5000;
 
 // The truck counts as stopped below this speed (m/s).
 const float STOPPED_SPEED = 0.1f;
@@ -36,9 +52,44 @@ const float TWO_PI = 6.2831853071795864769252867665590058f;
 
 const float WALK_SPEED = 1.5f;			// m/s
 const float RUN_SPEED = 4.0f;			// m/s
+const float CROUCH_SPEED = 0.8f;		// m/s
 const float EYE_HEIGHT = 1.75f;			// m above the ground
+const float CROUCH_EYE_HEIGHT = 1.0f;		// m above the ground
 const float MOUSE_SENSITIVITY = 0.0025f;	// rad per mouse count
 const float MAX_PITCH = 1.48f;			// rad, just short of straight up
+
+const int RUN_KEY = VK_SHIFT;
+const int CROUCH_KEY = VK_CONTROL;
+const int JUMP_KEY = VK_SPACE;
+
+// Diagnostics, when enabled in the ini file: reports the solid object straight ahead.
+const int PROBE_KEY = 'P';
+const float PROBE_DISTANCE = 30.0f;	// m
+
+// How fast the eyes move between standing and crouching (m/s).
+const float CROUCH_RATE = 3.5f;
+
+// Upward speed at the start of a jump (m/s). Reaches about half a metre.
+const float JUMP_SPEED = 3.2f;
+
+// A landing faster than this is heard (m/s).
+const float LANDING_SOUND_SPEED = 2.0f;
+
+// Distance covered by one step (m).
+const float WALK_STEP_LENGTH = 0.75f;
+const float RUN_STEP_LENGTH = 1.25f;
+
+// How far the eyes move up and down with each step (m).
+const float WALK_BOB_HEIGHT = 0.025f;
+const float RUN_BOB_HEIGHT = 0.045f;
+
+// How quickly the head bob fades in and out when starting and stopping (1/s).
+const float BOB_FADE_RATE = 7.0f;
+
+// Moving slower than this is standing still as far as steps are concerned (m/s).
+const float STEP_MIN_SPEED = 0.3f;
+
+const float PI = 3.14159265358979323846f;
 
 // How far outside the driver's head the walk starts (m). About a metre clear of the door.
 const float EXIT_SIDE_STEP = 1.5f;
@@ -82,9 +133,6 @@ const int CLEARANCE_DIRECTIONS = 8;
 // Most "ground lost / found" lines written to the log during one walk.
 const int MAX_GROUND_REPORTS = 30;
 
-// How often the diagnostics count the static collision in the scene (ms).
-const ULONGLONG TRACE_CENSUS_INTERVAL_MS = 5000;
-
 // How often the physics world's origin is checked against the truck (s).
 const float PHYSICS_LOCATE_INTERVAL = 2.0f;
 
@@ -116,9 +164,16 @@ struct walk_state_t
 	game::placement_t   placement;
 	LARGE_INTEGER       last_update;
 	float               time_since_locate;
-	float               fall_speed;		// m/s, downward
+	float               vertical_speed;	// m/s, upward
+	bool                airborne;		// Jumping or falling.
 	bool                ground_found;
 	int                 ground_reports;
+	float               eye_height;		// m above the feet, lower when crouching
+	float               step_phase;		// rad, a step is taken every PI
+	float               bob_strength;	// 0 standing still to 1 walking
+	float               bob_offset;		// m, added to the eye height
+	bool                jump_key_was_down;
+	bool                probe_key_was_down;
 };
 
 scs_log_t         game_log = NULL;
@@ -129,9 +184,64 @@ bool              physics_supported = false;
 bool              game_paused = true;
 bool              toggle_key_was_down = false;
 
+// Set while the toggle key is held after a refused attempt to get in.
+bool              force_return_armed = false;
+ULONGLONG         toggle_pressed_at = 0;
+
+// Whether HUD settings left over from an earlier session were dealt with.
+bool              hud_recovered = false;
+
 bool can_leave_truck(void)
 {
 	return (fabsf(telemetry.speed) < STOPPED_SPEED) && telemetry.parking_brake;
+}
+
+/**
+ * @brief Tells the player why something did not happen.
+ *
+ * The message goes on screen and to the log.
+ */
+void refuse(const char *const format, ...)
+{
+	char text[256];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(text, sizeof(text), format, args);
+	va_end(args);
+	log_message(SCS_LOG_TYPE_warning, "%s", text);
+	overlay::show(text);
+}
+
+/**
+ * @brief World position of the spot on the ground beside the driver's door.
+ *
+ * It is sideways from the driver's seat, on whichever side the driver sits. In
+ * vehicle space X is right and Z is backward.
+ */
+void door_position(double *const position)
+{
+	const scs_value_dvector_t &truck = telemetry.truck_placement.position;
+	const float truck_yaw = telemetry.truck_placement.orientation.heading * TWO_PI;
+	const float sin_yaw = sinf(truck_yaw);
+	const float cos_yaw = cosf(truck_yaw);
+
+	const float side = (telemetry.head_position.x > 0.0f) ? 1.0f : -1.0f;
+	const float exit_x = telemetry.head_position.x + side * EXIT_SIDE_STEP;
+	const float exit_z = telemetry.head_position.z;
+
+	position[0] = truck.x + exit_x * cos_yaw + exit_z * sin_yaw;
+	position[1] = truck.y;
+	position[2] = truck.z - exit_x * sin_yaw + exit_z * cos_yaw;
+}
+
+/**
+ * @brief Distance in the X/Z plane from the walker to a world position (m).
+ */
+double distance_to(const double x, const double z)
+{
+	const double dx = walk.position[0] - x;
+	const double dz = walk.position[2] - z;
+	return sqrt(dx * dx + dz * dz);
 }
 
 /**
@@ -141,7 +251,7 @@ bool can_leave_truck(void)
  */
 void update_placement(void)
 {
-	game::set_world_position(walk.placement, walk.position[0], walk.position[1] + EYE_HEIGHT, walk.position[2]);
+	game::set_world_position(walk.placement, walk.position[0], walk.position[1] + walk.eye_height + walk.bob_offset, walk.position[2]);
 
 	const float cos_yaw = cosf(walk.yaw * 0.5f);
 	const float sin_yaw = sinf(walk.yaw * 0.5f);
@@ -176,6 +286,11 @@ void activate_surroundings(void)
 {
 	if (physics_supported) {
 		game::physics_activate(walk.position[0], walk.position[1], walk.position[2], ACTIVATION_RADIUS);
+
+		// Vehicles are a separate matter: the game makes them solid near the truck, and
+		// now near this position too.
+
+		game::traffic_set_walker(walk.position[0], walk.position[1], walk.position[2]);
 	}
 }
 
@@ -218,31 +333,87 @@ void follow_ground(const float frame_time)
 	const bool found = physics_supported && game::physics_ground_height(walk.position[0], walk.position[2], walk.position[1] + STEP_HEIGHT, STEP_HEIGHT + GROUND_SEARCH_DEPTH, ground);
 	report_ground(found);
 	if (! found) {
-		walk.fall_speed = 0.0f;
+		walk.vertical_speed = 0.0f;
+		walk.airborne = false;
 		return;
 	}
-
-	const double drop = walk.position[1] - ground;
 	if (frame_time <= 0.0f) {
 		walk.position[1] = ground;
-		walk.fall_speed = 0.0f;
+		walk.vertical_speed = 0.0f;
+		walk.airborne = false;
 		return;
 	}
 
 	// Close to the ground the feet follow it; further above it they fall.
 
-	if (drop <= FALL_THRESHOLD) {
-		const double limit = GROUND_FOLLOW_SPEED * frame_time;
-		walk.position[1] = (fabs(drop) <= limit) ? ground : (walk.position[1] + ((drop > 0.0) ? -limit : limit));
-		walk.fall_speed = 0.0f;
-		return;
+	const double drop = walk.position[1] - ground;
+	if (! walk.airborne) {
+		if (drop <= FALL_THRESHOLD) {
+			const double limit = GROUND_FOLLOW_SPEED * frame_time;
+			walk.position[1] = (fabs(drop) <= limit) ? ground : (walk.position[1] + ((drop > 0.0) ? -limit : limit));
+			return;
+		}
+		walk.airborne = true;
+		walk.vertical_speed = 0.0f;
 	}
-	walk.fall_speed += GRAVITY * frame_time;
-	walk.position[1] -= walk.fall_speed * frame_time;
+
+	walk.vertical_speed -= GRAVITY * frame_time;
+	walk.position[1] += walk.vertical_speed * frame_time;
 	if (walk.position[1] <= ground) {
+		if (config.footsteps && (walk.vertical_speed < -LANDING_SOUND_SPEED)) {
+			sound::landing();
+		}
 		walk.position[1] = ground;
-		walk.fall_speed = 0.0f;
+		walk.vertical_speed = 0.0f;
+		walk.airborne = false;
 	}
+}
+
+/**
+ * @brief Starts a jump if the walker is standing on something.
+ */
+void jump(void)
+{
+	if (! walk.airborne && walk.ground_found && physics_supported) {
+		walk.airborne = true;
+		walk.vertical_speed = JUMP_SPEED;
+	}
+}
+
+/**
+ * @brief Moves the eyes between standing and crouching height.
+ */
+void update_crouch(const bool crouching, const float frame_time)
+{
+	const float target = crouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT;
+	const float limit = CROUCH_RATE * frame_time;
+	const float difference = target - walk.eye_height;
+	walk.eye_height = (fabsf(difference) <= limit) ? target : (walk.eye_height + ((difference > 0.0f) ? limit : -limit));
+}
+
+/**
+ * @brief Advances the walking cycle: head bob and the sound of each step.
+ *
+ * @param distance How far the walker moved over the ground this frame (m).
+ */
+void update_steps(const float distance, const bool running, const float frame_time)
+{
+	const bool stepping = ! walk.airborne && (frame_time > 0.0f) && (distance / frame_time > STEP_MIN_SPEED);
+	if (stepping) {
+		const float previous_phase = walk.step_phase;
+		walk.step_phase += distance / (running ? RUN_STEP_LENGTH : WALK_STEP_LENGTH) * PI;
+		if (config.footsteps && (floorf(walk.step_phase / PI) != floorf(previous_phase / PI))) {
+			sound::footstep();
+		}
+	}
+
+	const float target = stepping ? 1.0f : 0.0f;
+	walk.bob_strength += (target - walk.bob_strength) * fminf(BOB_FADE_RATE * frame_time, 1.0f);
+
+	// The eyes are lowest when a foot lands (phase a multiple of PI) and highest in between.
+
+	const float height = running ? RUN_BOB_HEIGHT : WALK_BOB_HEIGHT;
+	walk.bob_offset = config.head_bob ? (-fabsf(cosf(walk.step_phase)) * height * walk.bob_strength) : 0.0f;
 }
 
 /**
@@ -322,6 +493,24 @@ void move(const float x, const float z)
 }
 
 /**
+ * @brief Keeps the walker within the configured distance of the truck.
+ */
+void apply_leash(void)
+{
+	if (config.max_distance <= 0.0f) {
+		return;
+	}
+	const scs_value_dvector_t &truck = telemetry.truck_placement.position;
+	const double distance = distance_to(truck.x, truck.z);
+	if (distance <= config.max_distance) {
+		return;
+	}
+	const double scale = config.max_distance / distance;
+	walk.position[0] = truck.x + (walk.position[0] - truck.x) * scale;
+	walk.position[2] = truck.z + (walk.position[2] - truck.z) * scale;
+}
+
+/**
  * @brief Pushes the walker away from walls closer than the body radius in any direction.
  *
  * Moving only checks ahead, so walking along a wall or turning next to one could
@@ -353,25 +542,21 @@ void start_walk(void)
 		return;
 	}
 
-	// Step out sideways from the driver's seat, on whichever side the driver sits,
-	// facing the way the truck faces. In vehicle space X is right and Z is backward.
+	// Step out beside the driver's door, facing the way the truck faces.
 
-	const scs_value_dvector_t &truck = telemetry.truck_placement.position;
 	const float truck_yaw = telemetry.truck_placement.orientation.heading * TWO_PI;
-	const float sin_yaw = sinf(truck_yaw);
-	const float cos_yaw = cosf(truck_yaw);
+	door_position(walk.position);
 
-	const float side = (telemetry.head_position.x > 0.0f) ? 1.0f : -1.0f;
-	const float exit_x = telemetry.head_position.x + side * EXIT_SIDE_STEP;
-	const float exit_z = telemetry.head_position.z;
-
-	walk.position[0] = truck.x + exit_x * cos_yaw + exit_z * sin_yaw;
-	walk.position[1] = truck.y;
-	walk.position[2] = truck.z - exit_x * sin_yaw + exit_z * cos_yaw;
-
-	walk.fall_speed = 0.0f;
+	walk.vertical_speed = 0.0f;
+	walk.airborne = false;
 	walk.ground_found = true;
 	walk.ground_reports = 0;
+	walk.eye_height = EYE_HEIGHT;
+	walk.step_phase = 0.0f;
+	walk.bob_strength = 0.0f;
+	walk.bob_offset = 0.0f;
+	walk.jump_key_was_down = false;
+	walk.probe_key_was_down = false;
 	locate_physics();
 	activate_surroundings();
 	follow_ground(0.0f);
@@ -385,8 +570,10 @@ void start_walk(void)
 	QueryPerformanceCounter(&walk.last_update);
 	walk.active = true;
 	game::camera_set(walk.placement);
+	hud::hide();
 
-	log_message(SCS_LOG_TYPE_message, "on foot: WASD to move, Shift to run, mouse to look, F9 to get back in");
+	log_message(SCS_LOG_TYPE_message, "on foot");
+	overlay::show("On foot.  WASD move  \xC2\xB7  Shift run  \xC2\xB7  Ctrl crouch  \xC2\xB7  Space jump  \xC2\xB7  F9 at the door to get in");
 }
 
 void stop_walk(void)
@@ -397,8 +584,13 @@ void stop_walk(void)
 	walk.active = false;
 	input::capture_stop();
 	game::camera_release();
+	game::traffic_clear_walker();
+	hud::restore();
+	overlay::hide();
 	log_message(SCS_LOG_TYPE_message, "back in the truck");
 }
+
+void probe(void);
 
 void update_walk(void)
 {
@@ -444,15 +636,36 @@ void update_walk(void)
 		if (input::key_down('D')) { right += 1.0f; }
 		if (input::key_down('A')) { right -= 1.0f; }
 
+		const bool crouching = input::key_down(CROUCH_KEY);
+		const bool running = ! crouching && input::key_down(RUN_KEY);
+		update_crouch(crouching, frame_time);
+
+		const bool jump_key_down = input::key_down(JUMP_KEY);
+		if (jump_key_down && ! walk.jump_key_was_down) {
+			jump();
+		}
+		walk.jump_key_was_down = jump_key_down;
+
+		const bool probe_key_down = config.probe_key && input::key_down(PROBE_KEY);
+		if (probe_key_down && ! walk.probe_key_was_down) {
+			probe();
+		}
+		walk.probe_key_was_down = probe_key_down;
+
+		const double start_x = walk.position[0];
+		const double start_z = walk.position[2];
+
 		const float length = sqrtf(forward * forward + right * right);
 		if (length > 0.0f) {
-			const float step = (input::key_down(VK_SHIFT) ? RUN_SPEED : WALK_SPEED) * frame_time / length;
+			const float speed = crouching ? CROUCH_SPEED : (running ? RUN_SPEED : WALK_SPEED);
+			const float step = speed * frame_time / length;
 			const float sin_yaw = sinf(walk.yaw);
 			const float cos_yaw = cosf(walk.yaw);
 
 			// Forward is (-sin, -cos) and right is (cos, -sin) in the X/Z plane.
 
 			move((-sin_yaw * forward + cos_yaw * right) * step, (-cos_yaw * forward - sin_yaw * right) * step);
+			apply_leash();
 		}
 
 		walk.time_since_locate += frame_time;
@@ -461,6 +674,7 @@ void update_walk(void)
 		}
 		keep_clear_of_walls();
 		follow_ground(frame_time);
+		update_steps(static_cast<float>(distance_to(start_x, start_z)), running, frame_time);
 		update_placement();
 	}
 
@@ -470,36 +684,68 @@ void update_walk(void)
 void on_toggle_pressed(void)
 {
 	if (walk.active) {
-		stop_walk();
+		double door[3];
+		door_position(door);
+		const double distance = distance_to(door[0], door[2]);
+		if (distance <= ENTER_DISTANCE) {
+			stop_walk();
+		}
+		else {
+			force_return_armed = true;
+			refuse("Walk back to the driver's door to get in (%.0f m away), or hold F9 to be put back in the cab.", distance);
+		}
 		return;
 	}
 
-	// The log is the only place a message can go for now, so a refusal also beeps.
-
-	const char *refusal = NULL;
 	if (game_paused) {
-		refusal = "the game is paused";
+		refuse("The game is paused.");
 	}
 	else if (! camera_supported) {
-		refusal = "walking is not available on this game build";
+		refuse("Walking is not available on this game version.");
 	}
 	else if (! can_leave_truck()) {
-		refusal = "stop and set the parking brake before getting out";
+		refuse("Stop and set the parking brake before getting out.");
 	}
-	if (refusal) {
-		log_message(SCS_LOG_TYPE_warning, "%s", refusal);
-		MessageBeep(MB_ICONWARNING);
-		return;
+	else {
+		start_walk();
 	}
-	start_walk();
 }
 
 /**
- * @brief Diagnostics while the collision world is being investigated.
+ * @brief Diagnostics: shows and logs what solid object the walker is looking at.
+ */
+void probe(void)
+{
+	const float cos_pitch = cosf(walk.pitch);
+	const float direction[3] = { -sinf(walk.yaw) * cos_pitch, sinf(walk.pitch), -cosf(walk.yaw) * cos_pitch };
+
+	char text[256];
+	void *actor = NULL;
+	game::physics_describe(walk.position[0], walk.position[1] + walk.eye_height, walk.position[2], direction, PROBE_DISTANCE, text, sizeof(text), actor);
+
+	// With the collision trace on, this ties the object to the game code which created it.
+
+	const int path = game::trace_creation_path(actor);
+	if (path >= 0) {
+		const size_t length = strlen(text);
+		snprintf(text + length, sizeof(text) - length, ", added by call path %d", path);
+	}
+
+	const scs_value_dvector_t &truck = telemetry.truck_placement.position;
+	log_message(
+		SCS_LOG_TYPE_message,
+		"probe from (%.1f, %.2f, %.1f), %.0f m from the truck: %s",
+		walk.position[0], walk.position[1], walk.position[2], distance_to(truck.x, truck.z), text
+	);
+	overlay::show(text);
+}
+
+/**
+ * @brief Optional diagnostics of the game's collision world, switched on in the ini file.
  */
 void update_trace(void)
 {
-	if (! physics_supported) {
+	if (! physics_supported || (! config.trace_collision && ! config.collision_census)) {
 		return;
 	}
 	const scs_value_dvector_t &truck = telemetry.truck_placement.position;
@@ -507,12 +753,18 @@ void update_trace(void)
 
 	static ULONGLONG last_census = 0;
 	const ULONGLONG now = GetTickCount64();
-	if (game_paused || (now - last_census < TRACE_CENSUS_INTERVAL_MS)) {
+	if (! config.collision_census || game_paused || (now - last_census < CENSUS_INTERVAL_MS)) {
 		return;
 	}
 	last_census = now;
 	if (walk.active) {
 		game::trace_census("walking", truck.x, truck.z, walk.position[0], walk.position[2]);
+	}
+	else {
+		// Keeps the physics origin known while driving, so distances can be measured.
+
+		locate_physics();
+		game::trace_census("driving", truck.x, truck.z, truck.x, truck.z);
 	}
 }
 
@@ -521,10 +773,24 @@ void update_trace(void)
 SCSAPI_VOID telemetry_frame_end(const scs_event_t, const void *const, const scs_context_t)
 {
 	const bool down = input::game_has_focus() && input::key_down(TOGGLE_KEY);
-	if (down && ! toggle_key_was_down) {
+	const ULONGLONG now = GetTickCount64();
+	if (! down) {
+		force_return_armed = false;
+	}
+	else if (! toggle_key_was_down) {
+		toggle_pressed_at = now;
 		on_toggle_pressed();
 	}
+	else if (force_return_armed && walk.active && (now - toggle_pressed_at >= FORCE_RETURN_HOLD_MS)) {
+		force_return_armed = false;
+		stop_walk();
+	}
 	toggle_key_was_down = down;
+
+	if (! hud_recovered && ! game_paused) {
+		hud_recovered = true;
+		hud::recover();
+	}
 
 	update_trace();
 	if (walk.active) {
@@ -657,15 +923,27 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 	version_params->register_for_channel(SCS_TELEMETRY_TRUCK_CHANNEL_parking_brake, SCS_U32_NIL, SCS_VALUE_TYPE_bool, SCS_TELEMETRY_CHANNEL_FLAG_none, telemetry_store_bool, &telemetry.parking_brake);
 
 	game_log = version_params->common.log;
+	config_load();
 
 	camera_supported = game::camera_attach() && input::init();
 	physics_supported = camera_supported && game::physics_attach();
+	game::physics_ignore_barriers(config.ignore_barriers);
+	if (physics_supported) {
+		game::traffic_attach();
+	}
+	game::console_attach();
+	overlay::init();
+	sound::init();
+	hud_recovered = false;
 	log_message(
 		SCS_LOG_TYPE_message,
 		"version " TAKEAWALK_VERSION " loaded, walking %s, ground following %s. Park, set the parking brake and press F9",
 		camera_supported ? "available" : "NOT available on this game build",
 		physics_supported ? "available" : "not available"
 	);
+	if (physics_supported && config.trace_collision) {
+		game::trace_start();
+	}
 	return SCS_RESULT_ok;
 }
 
@@ -677,7 +955,10 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 SCSAPI_VOID scs_telemetry_shutdown(void)
 {
 	stop_walk();
+	game::traffic_detach();
 	game::trace_stop();
+	sound::shutdown();
+	overlay::shutdown();
 	input::shutdown();
 	game_log = NULL;
 }

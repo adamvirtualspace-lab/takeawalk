@@ -45,6 +45,23 @@ bool physics_locate(double truck_x, double truck_y, double truck_z, float yaw);
 void physics_activate(double x, double y, double z, float radius);
 
 /**
+ * @brief Whether the walker passes through the invisible walls behind the X symbols.
+ *
+ * They exist to keep vehicles on the map. Nothing changes for vehicles: the walls stay
+ * in the game, the queries below only stop seeing them.
+ */
+void physics_ignore_barriers(bool ignored);
+
+/**
+ * @brief Describes the first solid thing along a line from a world position, for diagnostics.
+ *
+ * @param direction Unit vector, three floats.
+ * @param[out] actor The game's actor object behind what was hit, NULL if there is none.
+ * @return False if there is nothing; the text says so.
+ */
+bool physics_describe(double x, double y, double z, const float *direction, float distance, char *text, size_t capacity, void *&actor);
+
+/**
  * @brief Looks for static geometry straight below a world position.
  *
  * @param from_y Height the search starts at.

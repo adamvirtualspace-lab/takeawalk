@@ -48,10 +48,12 @@ Outcome: a short write-up in `docs/` saying which of A/B/C below applies.
 Language C++, built with MSVC via `plugin/build.ps1` (Visual Studio 2022 is installed;
 no CMake needed), SCS SDK 1.15 in `plugin/third_party/scs_sdk` for the entry points.
 
-Status (2026-10-05): phase 1 tested in game: the photo camera reaches far beyond the
-stock limit at walking speed, but it is still just photo mode. 2.1-2.4 work in game
-(F9 steps out, WASD + mouse walk, slopes are followed). 2.5 (walls, falling) is built
-as v0.5 and awaits a test. Open issue: no ground found in some places away from the truck.
+Status (2026-10-06): 2.1-2.5 work in game (confirmed with v0.7): F9 steps out beside
+the driver's door, WASD + mouse walk, slopes and steps are followed, walls, fences,
+buildings and vehicles are solid anywhere on the map. v0.9 adds 2.6 and most of 2.7
+and awaits a test: get in only at the door (hold F9 to be put back), optional leash,
+on-screen messages, HUD hidden on foot, jump, crouch, head bob, generated footstep
+sounds, `takeawalk.ini`. Next after that: phase 2b.
 
 | Milestone | Content |
 |---|---|

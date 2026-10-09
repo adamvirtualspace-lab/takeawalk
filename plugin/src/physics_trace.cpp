@@ -30,7 +30,7 @@ const size_t ACTOR_GET_GLOBAL_POSE = 0xA0;	// PxRigidActor::getGlobalPose
 
 const uint16_t ACTOR_TYPE_STATIC = 1 << 0;
 
-const int MAX_STACKS = 24;
+const int MAX_STACKS = 64;
 const int STACK_DEPTH = 14;
 const uint32_t MAX_CENSUS_ACTORS = 16384;
 
@@ -48,6 +48,7 @@ struct stack_t
 	USHORT depth;
 	void  *frames[STACK_DEPTH];
 	bool   removal;
+	bool   dynamic;
 	bool   logged;
 	unsigned calls;
 };
@@ -69,9 +70,62 @@ CRITICAL_SECTION lock;
 bool             started = false;
 actor_function_t original_add = NULL;
 actor_function_t original_remove = NULL;
+actor_function_t original_add_dynamic = NULL;
 
 stack_t          stacks[MAX_STACKS];
 int              stack_count = 0;
+
+// Which call path added each of the most recently added actors (the game's actor objects).
+struct origin_t
+{
+	void *actor;
+	int   stack;
+};
+
+// The game's dynamic actor class (parked cars and other vehicles get one of these):
+// its virtual function which adds the actor to the scene.
+const size_t ADD_DYNAMIC_SLOT_RVA = 0x24489F0;
+const size_t ADD_DYNAMIC_FUNCTION_RVA = 0x163F500;
+
+const int MAX_ORIGINS = 8192;
+origin_t  origins[MAX_ORIGINS];
+int       next_origin = 0;
+
+// Traffic vehicles (parked cars included) get a physics body by changing state.
+// The class's virtual function which does that, as offsets from the start of the exe,
+// and where a vehicle keeps its state.
+const size_t STATE_SLOT_RVA = 0x2320C48;
+const size_t STATE_FUNCTION_RVA = 0xB8EBA0;
+const size_t VEHICLE_STATE = 0x18;	// u32
+
+struct state_path_t
+{
+	ULONG    hash;
+	uint32_t from;
+	uint32_t to;
+	USHORT   depth;
+	void    *frames[STACK_DEPTH];
+	bool     logged;
+};
+
+struct state_change_t
+{
+	void *vehicle;
+	int   path;
+};
+
+const int MAX_STATE_PATHS = 64;
+const int MAX_PENDING_CHANGES = 64;
+
+// Most state changes written to the log in one session.
+const int MAX_LOGGED_CHANGES = 400;
+
+actor_function_t original_set_state = NULL;
+state_path_t     state_paths[MAX_STATE_PATHS];
+int              state_path_count = 0;
+state_change_t   pending_changes[MAX_PENDING_CHANGES];
+int              pending_change_count = 0;
+int              logged_change_count = 0;
 distance_stats_t added;
 distance_stats_t removed;
 
@@ -152,16 +206,19 @@ void record(distance_stats_t &stats, const double distance)
 /**
  * @brief Notes one addition or removal of a static actor: who asked for it and how far from the truck it is.
  */
-void note(void *const actor, const bool removal)
+void note(void *const actor, const bool removal, const bool dynamic)
 {
 	void *frames[STACK_DEPTH];
 	ULONG hash = 0;
 	const USHORT depth = RtlCaptureStackBackTrace(1, STACK_DEPTH, frames, &hash);
 
+	// Only the static actor class is known to keep its PhysX actor at this offset.
+
 	uint8_t *px_actor = NULL;
 	float position[3];
 	double distance = 0.0;
 	const bool located =
+		! dynamic &&
 		memory::read(static_cast<const uint8_t *>(actor) + ACTOR_PX_ACTOR, px_actor) && px_actor &&
 		actor_position(px_actor, position) &&
 		distance_to(position, reference_x, reference_z, distance)
@@ -172,7 +229,7 @@ void note(void *const actor, const bool removal)
 		record(removal ? removed : added, distance);
 	}
 	int index = 0;
-	while ((index < stack_count) && ((stacks[index].hash != hash) || (stacks[index].removal != removal))) {
+	while ((index < stack_count) && ((stacks[index].hash != hash) || (stacks[index].removal != removal) || (stacks[index].dynamic != dynamic))) {
 		++index;
 	}
 	if ((index == stack_count) && (stack_count < MAX_STACKS)) {
@@ -181,11 +238,17 @@ void note(void *const actor, const bool removal)
 		stack.depth = depth;
 		memcpy(stack.frames, frames, sizeof(frames));
 		stack.removal = removal;
+		stack.dynamic = dynamic;
 		stack.logged = false;
 		stack.calls = 0;
 	}
 	if (index < stack_count) {
 		++stacks[index].calls;
+		if (! removal) {
+			origins[next_origin].actor = actor;
+			origins[next_origin].stack = index;
+			next_origin = (next_origin + 1) % MAX_ORIGINS;
+		}
 	}
 	LeaveCriticalSection(&lock);
 }
@@ -193,14 +256,61 @@ void note(void *const actor, const bool removal)
 void *hooked_add(void *a, void *b, void *c, void *d)
 {
 	void *const result = original_add(a, b, c, d);
-	note(a, false);
+	note(a, false, false);
 	return result;
 }
 
 void *hooked_remove(void *a, void *b, void *c, void *d)
 {
-	note(a, true);
+	note(a, true, false);
 	return original_remove(a, b, c, d);
+}
+
+void *hooked_add_dynamic(void *a, void *b, void *c, void *d)
+{
+	note(a, false, true);
+	return original_add_dynamic(a, b, c, d);
+}
+
+/**
+ * @brief Notes a traffic vehicle changing state: from what to what, and who asked for it.
+ */
+void note_state(void *const vehicle, const uint32_t new_state)
+{
+	uint32_t old_state = 0;
+	if (! memory::read(static_cast<const uint8_t *>(vehicle) + VEHICLE_STATE, old_state) || (old_state == new_state)) {
+		return;
+	}
+	void *frames[STACK_DEPTH];
+	ULONG hash = 0;
+	const USHORT depth = RtlCaptureStackBackTrace(1, STACK_DEPTH, frames, &hash);
+
+	EnterCriticalSection(&lock);
+	int index = 0;
+	while ((index < state_path_count) && ((state_paths[index].hash != hash) || (state_paths[index].from != old_state) || (state_paths[index].to != new_state))) {
+		++index;
+	}
+	if ((index == state_path_count) && (state_path_count < MAX_STATE_PATHS)) {
+		state_path_t &path = state_paths[state_path_count++];
+		path.hash = hash;
+		path.from = old_state;
+		path.to = new_state;
+		path.depth = depth;
+		memcpy(path.frames, frames, sizeof(frames));
+		path.logged = false;
+	}
+	if ((index < state_path_count) && (pending_change_count < MAX_PENDING_CHANGES)) {
+		state_change_t &change = pending_changes[pending_change_count++];
+		change.vehicle = vehicle;
+		change.path = index;
+	}
+	LeaveCriticalSection(&lock);
+}
+
+void *hooked_set_state(void *a, void *b, void *c, void *d)
+{
+	note_state(a, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(b)));
+	return original_set_state(a, b, c, d);
 }
 
 /**
@@ -286,9 +396,19 @@ void trace_start(void)
 	memset(&removed, 0, sizeof(removed));
 	started = true;
 
+	state_path_count = 0;
+	pending_change_count = 0;
+	logged_change_count = 0;
+
 	const bool add_hooked = replace_slot(ADD_SLOT_RVA, ADD_FUNCTION_RVA, hooked_add, original_add);
 	const bool remove_hooked = replace_slot(REMOVE_SLOT_RVA, REMOVE_FUNCTION_RVA, hooked_remove, original_remove);
-	log_message(SCS_LOG_TYPE_message, "trace: watching static actors being added (%s) and removed (%s)", add_hooked ? "yes" : "no", remove_hooked ? "yes" : "no");
+	const bool state_hooked = replace_slot(STATE_SLOT_RVA, STATE_FUNCTION_RVA, hooked_set_state, original_set_state);
+	const bool dynamic_hooked = replace_slot(ADD_DYNAMIC_SLOT_RVA, ADD_DYNAMIC_FUNCTION_RVA, hooked_add_dynamic, original_add_dynamic);
+	log_message(
+		SCS_LOG_TYPE_message,
+		"trace: watching static actors being added (%s) and removed (%s), dynamic actors being added (%s), traffic vehicles changing state (%s)",
+		add_hooked ? "yes" : "no", remove_hooked ? "yes" : "no", dynamic_hooked ? "yes" : "no", state_hooked ? "yes" : "no"
+	);
 }
 
 void trace_stop(void)
@@ -298,8 +418,31 @@ void trace_stop(void)
 	}
 	restore_slot(ADD_SLOT_RVA, original_add);
 	restore_slot(REMOVE_SLOT_RVA, original_remove);
+	restore_slot(STATE_SLOT_RVA, original_set_state);
+	restore_slot(ADD_DYNAMIC_SLOT_RVA, original_add_dynamic);
 	started = false;
 	DeleteCriticalSection(&lock);
+}
+
+int trace_creation_path(void *const actor)
+{
+	if (! started || ! actor) {
+		return -1;
+	}
+	int result = -1;
+	EnterCriticalSection(&lock);
+
+	// Addresses get reused, so the most recent addition of this one counts.
+
+	for (int age = 1; age <= MAX_ORIGINS; ++age) {
+		const origin_t &origin = origins[(next_origin - age + MAX_ORIGINS) % MAX_ORIGINS];
+		if (origin.actor == actor) {
+			result = origin.stack;
+			break;
+		}
+	}
+	LeaveCriticalSection(&lock);
+	return result;
 }
 
 void trace_flush(const double truck_x, const double truck_z)
@@ -332,8 +475,30 @@ void trace_flush(const double truck_x, const double truck_z)
 			const size_t rva = static_cast<size_t>(static_cast<uint8_t *>(stack.frames[frame]) - exe_base());
 			length += snprintf(text + length, sizeof(text) - length, " %zX", rva);
 		}
-		log_message(SCS_LOG_TYPE_message, "trace: %s call path %d:%s", stack.removal ? "removal" : "addition", i, text);
+		log_message(SCS_LOG_TYPE_message, "trace: %s%s call path %d:%s", stack.dynamic ? "dynamic " : "", stack.removal ? "removal" : "addition", i, text);
 	}
+
+	for (int i = 0; i < state_path_count; ++i) {
+		state_path_t &path = state_paths[i];
+		if (path.logged) {
+			continue;
+		}
+		path.logged = true;
+
+		char text[STACK_DEPTH * 10 + 1] = "";
+		size_t length = 0;
+		for (USHORT frame = 0; frame < path.depth; ++frame) {
+			const size_t rva = static_cast<size_t>(static_cast<uint8_t *>(path.frames[frame]) - exe_base());
+			length += snprintf(text + length, sizeof(text) - length, " %zX", rva);
+		}
+		log_message(SCS_LOG_TYPE_message, "trace: vehicle state %u -> %u call path %d:%s", path.from, path.to, i, text);
+	}
+	for (int i = 0; (i < pending_change_count) && (logged_change_count < MAX_LOGGED_CHANGES); ++i, ++logged_change_count) {
+		const state_change_t &change = pending_changes[i];
+		const state_path_t &path = state_paths[change.path];
+		log_message(SCS_LOG_TYPE_message, "trace: vehicle %p state %u -> %u by path %d", change.vehicle, path.from, path.to, change.path);
+	}
+	pending_change_count = 0;
 	LeaveCriticalSection(&lock);
 }
 
