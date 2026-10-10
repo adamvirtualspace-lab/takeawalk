@@ -495,6 +495,12 @@ static bool guarded_activate(void *const world, const void *const position, cons
 	}
 }
 
+void *physics_world(void)
+{
+	uint8_t *world = NULL;
+	return memory::read(reinterpret_cast<const uint8_t *>(world_global), world) ? world : NULL;
+}
+
 void physics_activate(const double x, const double y, const double z, const float radius)
 {
 	if (! activate_collision || faulted) {

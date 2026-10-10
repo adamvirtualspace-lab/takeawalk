@@ -67,6 +67,11 @@ const int JUMP_KEY = VK_SPACE;
 const int PROBE_KEY = 'P';
 const float PROBE_DISTANCE = 30.0f;	// m
 
+// With the probe key enabled, this key puts the walker in front of a sign which is out of
+// the truck's reach, to check that signs become solid around the walker.
+const int SIGN_KEY = 'O';
+const double SIGN_STAND_OFF = 3.0;	// m
+
 // How fast the eyes move between standing and crouching (m/s).
 const float CROUCH_RATE = 3.5f;
 
@@ -175,6 +180,7 @@ struct walk_state_t
 	float               bob_offset;		// m, added to the eye height
 	bool                jump_key_was_down;
 	bool                probe_key_was_down;
+	bool                sign_key_was_down;
 };
 
 scs_log_t         game_log = NULL;
@@ -562,6 +568,7 @@ void start_walk(void)
 	walk.bob_offset = 0.0f;
 	walk.jump_key_was_down = false;
 	walk.probe_key_was_down = false;
+	walk.sign_key_was_down = false;
 	locate_physics();
 	activate_surroundings();
 	follow_ground(0.0f);
@@ -597,6 +604,7 @@ void stop_walk(const bool game_closing)
 }
 
 void probe(void);
+void go_to_sign(void);
 
 void update_walk(void)
 {
@@ -658,6 +666,12 @@ void update_walk(void)
 		}
 		walk.probe_key_was_down = probe_key_down;
 
+		const bool sign_key_down = config.probe_key && input::key_down(SIGN_KEY);
+		if (sign_key_down && ! walk.sign_key_was_down) {
+			go_to_sign();
+		}
+		walk.sign_key_was_down = sign_key_down;
+
 		const double start_x = walk.position[0];
 		const double start_z = walk.position[2];
 
@@ -718,6 +732,25 @@ void on_toggle_pressed(void)
 }
 
 /**
+ * @brief Diagnostics: logs how many of the signs being shown are solid, by where they are.
+ */
+bool count_signs(game::scenery_census_t &census)
+{
+	const scs_value_dvector_t &truck = telemetry.truck_placement.position;
+	const double truck_position[3] = { truck.x, truck.y, truck.z };
+	if (! game::scenery_census(game::physics_world(), truck_position, walk.position, census)) {
+		log_message(SCS_LOG_TYPE_message, "signs: unable to read the game's list");
+		return false;
+	}
+	log_message(
+		SCS_LOG_TYPE_message,
+		"signs: %u shown. Within %.0f m of the walker: %u, solid %u. Within 35 m of the truck: %u, solid %u. Elsewhere: %u, solid %u",
+		census.shown, ACTIVATION_RADIUS, census.near_walker, census.near_walker_solid, census.near_truck, census.near_truck_solid, census.elsewhere, census.elsewhere_solid
+	);
+	return true;
+}
+
+/**
  * @brief Diagnostics: shows and logs what solid object the walker is looking at.
  */
 void probe(void)
@@ -744,6 +777,42 @@ void probe(void)
 		walk.position[0], walk.position[1], walk.position[2], distance_to(truck.x, truck.z), text
 	);
 	overlay::show(text);
+
+	game::scenery_census_t census;
+	count_signs(census);
+}
+
+/**
+ * @brief Diagnostics: puts the walker in front of the nearest sign which the truck does not make solid, facing it.
+ */
+void go_to_sign(void)
+{
+	game::scenery_census_t census;
+	if (! count_signs(census)) {
+		return;
+	}
+	if (! census.far_sign_found) {
+		refuse("No sign out of the truck's reach is being shown here.");
+		return;
+	}
+
+	// Stand on the truck's side of it.
+
+	const scs_value_dvector_t &truck = telemetry.truck_placement.position;
+	const double dx = truck.x - census.far_sign[0];
+	const double dz = truck.z - census.far_sign[2];
+	const double length = sqrt(dx * dx + dz * dz);
+	walk.position[0] = census.far_sign[0] + dx / length * SIGN_STAND_OFF;
+	walk.position[1] = census.far_sign[1] + 0.5;
+	walk.position[2] = census.far_sign[2] + dz / length * SIGN_STAND_OFF;
+	walk.yaw = static_cast<float>(atan2(dx, dz));
+	walk.pitch = 0.0f;
+	log_message(
+		SCS_LOG_TYPE_message,
+		"moved to a sign at (%.1f, %.2f, %.1f), %.0f m from the truck, which was %s",
+		census.far_sign[0], census.far_sign[1], census.far_sign[2], census.far_sign_from_truck, census.far_sign_solid ? "solid" : "not solid"
+	);
+	overlay::show("Moved to a sign out of the truck's reach. Press P to check it.");
 }
 
 /**

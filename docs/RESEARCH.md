@@ -380,8 +380,8 @@ From static analysis for v0.10. The barrier bypass is **not yet confirmed in gam
 - v0.12's barrier bypass is **confirmed in game** (2026-10-10): the walker passes
   through X barriers.
 - **Signs and poles are not solid for the walker until the truck comes near.**
-  Worked out by static analysis on 2026-10-10; the fix in v0.14 is **not yet confirmed
-  in game**.
+  Worked out by static analysis on 2026-10-10; the fix in v0.14 is **confirmed in game**
+  the same day by a scripted run (see the last point).
   - The sign item class (vtable RVA 0x229A4B0, map item type 36) has an empty function
     at +0x1B8, so the item visitor of `489E10` does nothing for signs.
   - The world object keeps two lists of items which get a call every frame: the array
@@ -422,6 +422,19 @@ From static analysis for v0.10. The barrier bypass is **not yet confirmed in gam
     type 0x20), and one was dynamic with flags 0x80.
   - The trace (`trace_collision`) still hooks RVA 0x47BA60 and logs the class, type
     and call stack of every distinct way an item is taken off the second list.
+  - Test of v0.14 (2026-10-10, Svolvaer, truck parked): with `probe_key` on, P also logs
+    how many of the shown signs have a collision object and O puts the walker 3 m in
+    front of the nearest sign which is more than 60 m from the truck. On getting out:
+    97 signs shown, 9 within 25 m of the walker all solid, 3 more within 35 m of the
+    truck all solid, 85 elsewhere none solid. The sign picked by O (62 m from the truck)
+    was not solid before the move; 2.6 s after it the probe hit a dynamic actor (game
+    class RVA 0x2448928, flags 0x80) at 2.94 m, and the count was 6 of 6 solid near the
+    walker, 12 of 12 near the truck, 0 of 97 elsewhere. Walking at it for 4 s moved the
+    walker 4.6 m instead of 6 m and off the straight line: it slides round the pole, as
+    it does along walls. Compounds were not part of this check.
+  - The run was driven by `tools/game_input.py` (keys and relative mouse moves sent to
+    the game window only, Steam's F12 screenshots to see the menus; the menu cursor
+    follows relative mouse moves 1:1 at 1920x1080).
 - Workshop mods that remove the X barriers do it for vehicles too. One of them is
   marked incompatible and removed from the Workshop. Ours only affects the walker.
 - **Open: parked cars are not solid for the walker** although the truck collides with

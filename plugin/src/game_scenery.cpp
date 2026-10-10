@@ -2,6 +2,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <math.h>
 
 #include "game_camera.h"
 #include "game_scenery.h"
@@ -42,6 +43,26 @@ const size_t COMPOUND_UPDATE_MOVED = 16;
 
 // Sign
 const size_t SIGN_POSITION = 0x7C;	// float position[3], int16 chunk_x, int16 chunk_z
+
+const size_t SIGN_FLAGS = 0x38;		// u32
+const size_t SIGN_COLLISION = 0xA8;	// collision object *, NULL while the sign is not solid
+
+// Sign flags: bit 18 has to be set and bits 16 (knocked over) and 22 clear for the game to make it solid.
+const uint32_t SIGN_CAN_BE_SOLID = 0x40000;
+const uint32_t SIGN_NEVER_SOLID = 0x410000;
+
+// Map item
+const size_t ITEM_UPDATE_SLOT = 0x190;	// in its vtable: the function called every frame
+
+// World object: the items which get that call every frame.
+const size_t WORLD_UPDATED_ITEMS = 0x658;	// item **
+const size_t WORLD_UPDATED_COUNT = 0x660;	// u64
+
+// More items than this in the list means it was misread.
+const uint64_t MAX_UPDATED_ITEMS = 100000;
+
+// The game's own limit (m).
+const double TRUCK_RADIUS = 35.0;
 
 // Compound
 const size_t COMPOUND_NODE = 0x50;	// node *, which starts with its position as int32[3] in 1/256 m
@@ -191,6 +212,74 @@ void scenery_detach(void)
 	memory::hook_remove(sign_update_hook);
 	memory::hook_remove(compound_update_hook);
 	memory::hook_remove(player_position_hook);
+}
+
+bool scenery_census(void *const world, const double *const truck, const double *const walker, scenery_census_t &census)
+{
+	census = scenery_census_t();
+	const uint8_t *const *items = NULL;
+	uint64_t count = 0;
+	if (
+		! world || ! sign_update_hook.function ||
+		! memory::read(static_cast<const uint8_t *>(world) + WORLD_UPDATED_ITEMS, items) ||
+		! memory::read(static_cast<const uint8_t *>(world) + WORLD_UPDATED_COUNT, count) ||
+		(count > MAX_UPDATED_ITEMS)
+	) {
+		return false;
+	}
+	const double radius = walker_radius;
+	for (uint64_t i = 0; i < count; ++i) {
+		const uint8_t *item = NULL;
+		const uint8_t *vtable = NULL;
+		const uint8_t *update_function = NULL;
+		position_t position;
+		uint32_t flags = 0;
+		const uint8_t *collision = NULL;
+		if (
+			! memory::read(reinterpret_cast<const uint8_t *>(items + i), item) ||
+			! memory::read(item, vtable) ||
+			! memory::read(vtable + ITEM_UPDATE_SLOT, update_function) ||
+			(update_function != sign_update_hook.function) ||
+			! memory::read(item + SIGN_POSITION, position) ||
+			! memory::read(item + SIGN_FLAGS, flags) ||
+			! memory::read(item + SIGN_COLLISION, collision)
+		) {
+			continue;
+		}
+		++census.shown;
+		const double x = position.chunk_x * CHUNK_SIZE + position.position[0];
+		const double y = position.position[1];
+		const double z = position.chunk_z * CHUNK_SIZE + position.position[2];
+		const double from_truck = sqrt((x - truck[0]) * (x - truck[0]) + (y - truck[1]) * (y - truck[1]) + (z - truck[2]) * (z - truck[2]));
+		const bool solid = collision != NULL;
+		const bool by_walker =
+			walker &&
+			((x - walker[0]) * (x - walker[0]) + (y - walker[1]) * (y - walker[1]) + (z - walker[2]) * (z - walker[2]) < radius * radius)
+		;
+		if (by_walker) {
+			++census.near_walker;
+			census.near_walker_solid += solid;
+		}
+		else if (from_truck < TRUCK_RADIUS) {
+			++census.near_truck;
+			census.near_truck_solid += solid;
+		}
+		else {
+			++census.elsewhere;
+			census.elsewhere_solid += solid;
+		}
+
+		const bool can_be_solid = (flags & SIGN_CAN_BE_SOLID) && ! (flags & SIGN_NEVER_SOLID);
+		if (can_be_solid && (from_truck > TRUCK_RADIUS + radius) && (! census.far_sign_found || (from_truck < census.far_sign_from_truck))) {
+			census.far_sign_found = true;
+			census.far_sign[0] = x;
+			census.far_sign[1] = y;
+			census.far_sign[2] = z;
+			census.far_sign_from_truck = from_truck;
+			census.far_sign_solid = solid;
+		}
+	}
+	return true;
 }
 
 void scenery_set_walker(const double x, const double y, const double z, const double radius)

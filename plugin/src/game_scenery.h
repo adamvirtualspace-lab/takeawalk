@@ -31,4 +31,47 @@ void scenery_set_walker(double x, double y, double z, double radius);
  */
 void scenery_clear_walker(void);
 
+/**
+ * @brief Diagnostics: the signs the game is showing, and which of them are solid.
+ */
+struct scenery_census_t
+{
+	unsigned shown;
+
+	/**
+	 * @brief Signs within the walker's radius, and how many of those have their collision.
+	 */
+	unsigned near_walker;
+	unsigned near_walker_solid;
+
+	/**
+	 * @brief The same for signs within the game's 35 m of the truck and not near the walker.
+	 */
+	unsigned near_truck;
+	unsigned near_truck_solid;
+
+	/**
+	 * @brief And for all the others, which are expected not to be solid.
+	 */
+	unsigned elsewhere;
+	unsigned elsewhere_solid;
+
+	/**
+	 * @brief The sign nearest to the truck which is out of the truck's reach and able to be solid.
+	 */
+	bool   far_sign_found;
+	double far_sign[3];
+	double far_sign_from_truck;
+	bool   far_sign_solid;
+};
+
+/**
+ * @brief Counts the signs. Call from the game's main thread only.
+ *
+ * @param world The game's world object.
+ * @param truck Position of the truck, three coordinates.
+ * @param walker Position of the walker, NULL when nobody is on foot.
+ */
+bool scenery_census(void *world, const double *truck, const double *walker, scenery_census_t &census);
+
 } // namespace game

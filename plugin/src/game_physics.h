@@ -16,6 +16,11 @@ namespace game {
 size_t physics_scenes(void **result, size_t capacity);
 
 /**
+ * @brief The game's world object, which owns the map items. NULL if it is not known.
+ */
+void *physics_world(void);
+
+/**
  * @brief Chunk which is the origin of physics coordinates. False until physics_locate() succeeded.
  */
 bool physics_origin(int &chunk_x, int &chunk_z);
