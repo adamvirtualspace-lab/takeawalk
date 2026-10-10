@@ -14,6 +14,11 @@ bool init(void);
 void shutdown(void);
 
 /**
+ * @brief Diagnostics: log who is registered for raw mouse input whenever capturing starts or stops.
+ */
+void trace(bool enabled);
+
+/**
  * @brief Starts collecting mouse movement and hides the walk keys from the game.
  */
 void capture_start(void);

@@ -20,6 +20,7 @@
 #include "config.h"
 #include "game_camera.h"
 #include "game_console.h"
+#include "game_driver.h"
 #include "game_physics.h"
 #include "game_scenery.h"
 #include "game_traffic.h"
@@ -30,7 +31,7 @@
 #include "physics_trace.h"
 #include "sound.h"
 
-#define TAKEAWALK_VERSION "0.14"
+#define TAKEAWALK_VERSION "0.17"
 
 namespace {
 
@@ -181,6 +182,9 @@ struct walk_state_t
 	bool                jump_key_was_down;
 	bool                probe_key_was_down;
 	bool                sign_key_was_down;
+
+	// Reminder of keys currently on screen, empty if none.
+	char                hint[128];
 };
 
 scs_log_t         game_log = NULL;
@@ -584,8 +588,9 @@ void start_walk(void)
 	game::camera_set(walk.placement);
 	hud::hide();
 
+	game::driver_set_hidden(config.hide_driver);
 	log_message(SCS_LOG_TYPE_message, "on foot");
-	overlay::show("On foot.  WASD move  \xC2\xB7  Shift run  \xC2\xB7  Ctrl crouch  \xC2\xB7  Space jump  \xC2\xB7  F9 at the door to get in");
+	overlay::show("On foot.  WASD move  \xC2\xB7  Shift run  \xC2\xB7  Ctrl crouch  \xC2\xB7  Space jump");
 }
 
 void stop_walk(const bool game_closing)
@@ -598,13 +603,43 @@ void stop_walk(const bool game_closing)
 	game::camera_release();
 	game::traffic_clear_walker();
 	game::scenery_clear_walker();
+	game::driver_set_hidden(false);
 	hud::restore(game_closing);
 	overlay::hide();
+	overlay::set_hint(NULL);
+	walk.hint[0] = 0;
 	log_message(SCS_LOG_TYPE_message, "back in the truck");
 }
 
 void probe(void);
 void go_to_sign(void);
+
+/**
+ * @brief Keeps the reminder of how to get back into the truck on screen and up to date.
+ *
+ * @param visible False while a menu is open or the game is not in front.
+ */
+void update_hint(const bool visible)
+{
+	char hint[sizeof(walk.hint)] = "";
+	if (visible && config.key_hint) {
+		double door[3];
+		door_position(door);
+		const double distance = distance_to(door[0], door[2]);
+		if (distance <= ENTER_DISTANCE) {
+			snprintf(hint, sizeof(hint), "[F9] Get in");
+		}
+		else {
+			// A press does nothing this far from the door, so that line is faded.
+
+			snprintf(hint, sizeof(hint), "~[F9] Get in at the driver's door, %.0f m away\n[Hold F9] Back to the cab from here", distance);
+		}
+	}
+	if (strcmp(hint, walk.hint) != 0) {
+		strcpy(walk.hint, hint);
+		overlay::set_hint(hint);
+	}
+}
 
 void update_walk(void)
 {
@@ -698,6 +733,7 @@ void update_walk(void)
 		update_placement();
 	}
 
+	update_hint(controllable);
 	game::camera_set(walk.placement);
 }
 
@@ -1000,6 +1036,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 	game_log = version_params->common.log;
 	config_load();
 
+	input::trace(config.trace_input);
 	camera_supported = game::camera_attach() && input::init();
 	physics_supported = camera_supported && game::physics_attach();
 	game::physics_ignore_barriers(config.ignore_barriers);
@@ -1008,6 +1045,9 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 		game::scenery_attach();
 	}
 	game::console_attach();
+	if (camera_supported) {
+		game::driver_attach();
+	}
 	overlay::init();
 	sound::init();
 	hud_recovered = false;
@@ -1033,6 +1073,7 @@ SCSAPI_VOID scs_telemetry_shutdown(void)
 	stop_walk(true);
 	game::traffic_detach();
 	game::scenery_detach();
+	game::driver_detach();
 	game::trace_stop();
 	sound::shutdown();
 	overlay::shutdown();

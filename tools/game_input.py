@@ -1,6 +1,10 @@
 """Scripted input for testing the plugin in the game. Every action is refused unless the
 game's own window is in the foreground, so nothing is ever typed into another program.
 
+Start the game without arguments: any argument (such as -nointro) makes Steam ask the
+user to confirm the launch, and nothing starts until that prompt is answered. Esc skips
+the intro and the SDK notice.
+
 game_input.py state                      foreground window, game window rectangle, cursor position
 game_input.py focus                      bring the game's window to the foreground
 game_input.py key <name> [hold_ms]       press and release a key (f9, f12, w, o, p, esc, enter, shift, ...)
@@ -9,6 +13,8 @@ game_input.py rel <dx> <dy>              move the mouse relatively
 game_input.py abs <x> <y>                put the cursor at a screen position
 game_input.py click                      left click where the cursor is
 game_input.py shot                       press F12 (Steam screenshot) and print the newest file
+game_input.py grab <file.png> [x y w h]   copy the game window's area of the screen (or a part of it) to a PNG;
+                                         unlike a Steam screenshot this includes the plugin's own panels
 game_input.py seq <step> ...             several of the above in one go: key:w:2000 wait:500 rel:100:0 shot abs:10:20 click
 """
 import ctypes, ctypes.wintypes as wt, glob, os, sys, time
@@ -67,7 +73,8 @@ def game_window():
                 found.append((hwnd, r.left, r.top, r.right, r.bottom))
         return True
     user32.EnumWindows(ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)(each), 0)
-    return found[0] if found else None
+    # The largest one: the plugin's panels are windows of the game's process too.
+    return max(found, key=lambda w: (w[3] - w[1]) * (w[4] - w[2])) if found else None
 
 def game_in_front():
     return window_process(user32.GetForegroundWindow()) == GAME
@@ -137,6 +144,35 @@ def shot():
             return
     print('no new screenshot appeared')
 
+def grab(path, area=None):
+    require_game()
+    import struct, zlib
+    _, left, top, right, bottom = game_window()
+    x, y, w, h = area if area else (0, 0, right - left, bottom - top)
+    gdi = ctypes.windll.gdi32
+    screen = user32.GetDC(None)
+    memory = gdi.CreateCompatibleDC(screen)
+    bitmap = gdi.CreateCompatibleBitmap(screen, w, h)
+    gdi.SelectObject(memory, bitmap)
+    gdi.BitBlt(memory, 0, 0, w, h, screen, left + x, top + y, 0x00CC0020 | 0x40000000)
+    header = struct.pack('<IiiHHIIiiII', 40, w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+    pixels = ctypes.create_string_buffer(w * h * 4)
+    gdi.GetDIBits(memory, bitmap, 0, h, pixels, header, 0)
+    gdi.DeleteObject(bitmap)
+    gdi.DeleteDC(memory)
+    user32.ReleaseDC(None, screen)
+    raw = bytearray()
+    data = pixels.raw
+    for row in range(h):
+        line = data[row * w * 4:(row + 1) * w * 4]
+        raw.append(0)
+        raw += bytes(b for i in range(0, len(line), 4) for b in (line[i + 2], line[i + 1], line[i]))
+    def chunk(kind, body):
+        return struct.pack('>I', len(body)) + kind + body + struct.pack('>I', zlib.crc32(kind + body) & 0xFFFFFFFF)
+    with open(path, 'wb') as f:
+        f.write(bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(bytes(raw), 6)) + chunk(b'IEND', b''))
+    print('grabbed', path)
+
 def state():
     fg = user32.GetForegroundWindow()
     title = ctypes.create_unicode_buffer(200)
@@ -174,6 +210,8 @@ def run(step):
         click()
     elif p[0] == 'shot':
         shot()
+    elif p[0] == 'grab':
+        grab(p[1], tuple(int(v) for v in p[2:6]) if len(p) >= 6 else None)
     elif p[0] == 'state':
         state()
     elif p[0] == 'focus':
@@ -192,5 +230,7 @@ elif what == 'rel':
     rel(int(sys.argv[2]), int(sys.argv[3]))
 elif what == 'abs':
     absolute(int(sys.argv[2]), int(sys.argv[3]))
+elif what == 'grab':
+    grab(sys.argv[2], tuple(int(v) for v in sys.argv[3:7]) if len(sys.argv) >= 7 else None)
 else:
     run(what)

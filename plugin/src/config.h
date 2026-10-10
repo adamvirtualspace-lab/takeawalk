@@ -33,6 +33,16 @@ struct config_t
 	bool hide_hud;
 
 	/**
+	 * @brief Take the driver's figure out of the cab while on foot.
+	 */
+	bool hide_driver;
+
+	/**
+	 * @brief Keep a reminder on screen of how to get back into the truck.
+	 */
+	bool key_hint;
+
+	/**
 	 * @brief Walk through the invisible walls behind the X symbols.
 	 */
 	bool ignore_barriers;
@@ -53,6 +63,11 @@ struct config_t
 	 * @brief P while on foot reports what solid object is straight ahead.
 	 */
 	bool probe_key;
+
+	/**
+	 * @brief Log the raw mouse registrations when the mouse is taken from the game and given back.
+	 */
+	bool trace_input;
 };
 
 extern config_t config;

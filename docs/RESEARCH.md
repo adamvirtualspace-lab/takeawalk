@@ -214,6 +214,76 @@ on the plugin, and on one specific unknown: creating and animating an engine act
 from plugin code. Once the plugin already owns the camera, the third-person camera
 itself (orbit behind the character) is simple.
 
+### The driver's figure, and what plays on which skeleton **[verified from the game archives and exe, 1.61.1.1, 2026-10-10]**
+
+Read with `tools/hashfs.py` (the archives are HashFS v2, paths hashed with CityHash64
+1.0.3) and `tools/skeleton_info.py` (bone lists of `.pmg`, headers of `.pma`).
+
+- A truck's driver is `/vehicle/driver/man|woman/driver.pmd` (`driver_uk` for right-hand
+  drive) with one clip, `driving.pma` (47 frames, steering). The Scania R 2016 interior
+  definitions name no other driver, so trucks use this one. It is a full figure: **72
+  bones** called `root`, `driver_root`, `joint08`... (two legs of hip, knee, ankle and
+  toe, a spine, arms, all fingers) plus `sw_root`, `stwheel` and `steeringhead` for the
+  steering wheel.
+- A second driver exists, `/asset/character/human/driver/man|woman/driver.pmd`, with
+  clips named after cars (`ford_f150_ani.pma`, ...). The game picks it when the interior
+  names a driver animation. It has **61 bones**: `hips`, `spine`..`spine2`, `lfshould`,
+  `lfarm`, `lfforarm`, `lfhand`, fingers, `neck`, `head`, `lfupleg`, `lfleg`, `lffoot`,
+  `lftoe`, twist bones, the same on the right, and `seatbelt`.
+- Pedestrians (`/asset/character/human/casual|business|worker|.../*_mov.pmd`) have **60
+  bones for the full model: the same names, order, parents and rest positions as that
+  second driver, without `seatbelt`**. Lower detail versions have 40, 30, 20, 15 and 1.
+- Their clips are in `/asset/animation/man` and `/woman`, one file per level of detail.
+  For men at full detail: `meso_walking_01` (2.33 s), `meso_walking_02` (4.27 s),
+  `meso_walking_mobile_01/02`, `meso_standing_idle_01..05`, `meso_standing_mobile_01/02`,
+  `meso_sitting_idle_01/02`, `meso_leaning_idle_01/02`, `m_biking_01/02`. Women have the
+  matching set. **No running, jumping or crouching.**
+- `.pmg` and `.pma` both carry a skeleton hash. Pedestrian models and their clips agree
+  (men 86962819C4929EEF, women 189296DFF51DA750). The truck driver's clip carries the
+  hash of `driver_uk.pmg`, not of `driver.pmg`, yet plays on both, so the game does not
+  insist on equal hashes; the bone count (72 in both) is what the two share.
+- AI drivers (`/vehicle/driver/ai_N.pmg`) have no bones: posed statues.
+
+What follows for a third-person character:
+
+| Candidate | Walk clips | Verdict |
+|---|---|---|
+| The truck driver (72 bones) | None fit: different bones from the pedestrians | Needs a walk clip retargeted to its skeleton in Blender and shipped in the mod |
+| A pedestrian model (60 bones) | The game's own walking and idle clips fit as they are | Least work; no run, jump or crouch; looks like a passer-by |
+| The second driver (61 bones) | Pedestrian clips fit bone for bone except `seatbelt` | Needs each clip rewritten with one more bone, or the game to accept 60 on 61 (untested) |
+| Own model, for instance on an Unreal skeleton | Own clips, retargeted from any source | Most freedom; goes through Blender and the SCS tools. The limits quoted above apply (255 bones); the game's own figures use four weights per vertex |
+
+### How the game creates and animates the driver **[static analysis, 1.61.1.1, 2026-10-10]**
+
+This is the template for putting a character of our own into the world.
+
+- The player's vehicle object keeps a small driver record at +0x1DF0: the truck's model
+  (+0), the figure's scene node (+8), the clip's handle (+0x10), the last pose (+0x18).
+- RVA 0x9DFEC0 `(record, vehicle model, name, right-hand drive)` builds it: RVA 0x9E0730
+  loads the model by path and makes a node (RVA 0x15D89D0), attaches it at the seat
+  locator, and gives it an animation controller (RVA 0x657E60, 0x657F40, 0x15E1BE0);
+  RVA 0x9E0920 loads the clip, whose path comes from RVA 0x9DFD40. RVA 0x9DFE60 clears
+  the record. Traffic uses RVA 0x9E0280 instead.
+- RVA 0x9E0530 `(record)` runs every frame (from the player vehicle's update at RVA
+  0x5D9D4C, and from RVA 0xB22B70 for others) and poses the figure from the steering
+  angle with RVA 0x15DD000, 0x15DD6A0 and 0x15DD8B0 on the node and clip handle.
+- A scene node keeps its placement relative to its parent at +0x30 (the same 32 bytes
+  as a camera placement); RVA 0x4DEC30 `(node, placement)` sets it and marks the
+  children for update.
+- So the pieces a plugin needs all exist as callable functions: load a model by path,
+  attach it, load a clip, set the clip's time, move the node. Not yet tried: calling
+  them with a path of our own, and a node which is not a child of the truck.
+
+### Hiding the driver while on foot (v0.15) **[confirmed in game by a scripted run, 2026-10-10]**
+
+`game_driver.cpp` hooks RVA 0x9E0530 and recognises the player's driver by the return
+address of the call at RVA 0x5D9D4C. While on foot it moves the figure's node 10 km
+below the seat with RVA 0x4DEC30 and puts it back afterwards; it checks every frame in
+case the game re-seats the figure. In the test the seat was empty seen through the
+driver's window, and the log showed the figure put back 1.40 m above its attachment
+point on getting in. No visibility switch was found (the game has no
+console variable for it either); moving the node needs none.
+
 No existing walking mod I found advertises third person; TM Real Walk is first person
 with a ground shadow and a hand-held flashlight. **[reported]**
 
@@ -484,6 +554,28 @@ From static analysis for v0.10. The barrier bypass is **not yet confirmed in gam
 - The collision group test for barriers only recognises static actors: the game's
   dynamic actor class keeps its PhysX pointer elsewhere, so its group reads as unknown
   and it is treated as solid, which is what is wanted.
+
+## 4h. Input while on foot: checks of 2026-10-10
+
+- **Keys do not reach the truck.** With the engine running and the walker on foot,
+  scripted presses of P (wipers), Space (parking brake) and E (engine) changed nothing
+  on the game's indicators, with the probe key on and off, sent both as virtual keys
+  and as bare scan codes, and while W was held. The wiper level only reacts with the
+  ignition on, so a check with the engine off proves nothing. The report which started
+  this was withdrawn by the user as a probable slip (P pressed in the cab).
+- The game creates both a DirectInput keyboard and the window-message one
+  (`sys.keyboard`); the profile's controls use the second, which is what the key filter
+  in `input.cpp` blocks. DirectInput owns the raw mouse registration (window class
+  `DIEmWin`, flag `RIDEV_INPUTSINK`); `trace_input=1` logs it being taken and given
+  back, and three walks in a row restored it correctly.
+- **Seen once, not reproduced:** after one walk in a scripted session the menu cursor
+  no longer followed (scripted) mouse movement until the game was restarted, while
+  mouse look on foot still worked. Three attempts to repeat it with the same steps
+  (engine key, scan code keys, long F9 hold) did not show it. If it comes back, run
+  with `trace_input=1` and look at the "raw input" lines.
+- The game closes cleanly when its window gets `WM_CLOSE`; no confirmation is asked.
+- Steam's F12 is also the game's own screenshot key here: each press writes a PNG to
+  the game's `screenshot` folder as well as Steam's JPG.
 
 ## 5. Local environment
 

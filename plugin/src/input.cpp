@@ -26,6 +26,9 @@ std::atomic<long> mouse_y(0);
 HWND    game_window = NULL;
 WNDPROC game_window_procedure = NULL;
 
+// Diagnostics: log the raw mouse registrations whenever the mouse is taken or given back.
+bool trace_registration = false;
+
 // The game's own registration for raw mouse input, put back when capturing ends.
 RAWINPUTDEVICE game_mouse_registration = {};
 bool           game_mouse_registered = false;
@@ -94,6 +97,35 @@ DWORD WINAPI listener_main(LPVOID)
 	return 0;
 }
 
+/**
+ * @brief Notes in the log who receives raw mouse input in this process at the moment.
+ */
+void log_mouse_registration(const char *const moment)
+{
+	RAWINPUTDEVICE registered[16];
+	UINT count = 16;
+	const UINT found = GetRegisteredRawInputDevices(registered, &count, sizeof(RAWINPUTDEVICE));
+	if (found == static_cast<UINT>(-1)) {
+		log_message(SCS_LOG_TYPE_message, "raw input %s: unable to list the registrations (error %lu)", moment, GetLastError());
+		return;
+	}
+	bool any = false;
+	for (UINT i = 0; i < found; ++i) {
+		if ((registered[i].usUsagePage != USAGE_PAGE_GENERIC) || (registered[i].usUsage != USAGE_MOUSE)) {
+			continue;
+		}
+		char window_class[64] = "none";
+		if (registered[i].hwndTarget) {
+			GetClassNameA(registered[i].hwndTarget, window_class, sizeof(window_class));
+		}
+		log_message(SCS_LOG_TYPE_message, "raw input %s: mouse goes to window %p (%s), flags %lX", moment, registered[i].hwndTarget, window_class, registered[i].dwFlags);
+		any = true;
+	}
+	if (! any) {
+		log_message(SCS_LOG_TYPE_message, "raw input %s: nobody is registered for the mouse (%u other registrations)", moment, found);
+	}
+}
+
 void set_mouse_listening(const bool enabled)
 {
 	// A process has one raw input registration per device type, so listening takes the
@@ -126,12 +158,23 @@ void set_mouse_listening(const bool enabled)
 		device.hwndTarget = NULL;
 	}
 
+	if (trace_registration) {
+		log_mouse_registration(enabled ? "before taking the mouse" : "before giving the mouse back");
+	}
 	if (! RegisterRawInputDevices(&device, 1, sizeof(device))) {
 		log_message(SCS_LOG_TYPE_warning, "unable to %s mouse listening (error %lu)", enabled ? "start" : "stop", GetLastError());
+	}
+	if (trace_registration && ! enabled) {
+		log_mouse_registration("after giving the mouse back");
 	}
 }
 
 } // namespace
+
+void trace(const bool enabled)
+{
+	trace_registration = enabled;
+}
 
 bool init(void)
 {

@@ -54,10 +54,13 @@ void config_load(void)
 	config.footsteps = true;
 	config.footstep_volume = 0.2f;
 	config.hide_hud = true;
+	config.hide_driver = true;
+	config.key_hint = true;
 	config.ignore_barriers = true;
 	config.trace_collision = false;
 	config.collision_census = false;
 	config.probe_key = false;
+	config.trace_input = false;
 
 	wchar_t path[MAX_PATH];
 	if (! config_file_path(FILE_NAME, path, MAX_PATH)) {
@@ -68,10 +71,13 @@ void config_load(void)
 	config.footsteps = read_bool(path, L"walk", L"footsteps", config.footsteps);
 	config.footstep_volume = read_float(path, L"walk", L"footstep_volume", config.footstep_volume);
 	config.hide_hud = read_bool(path, L"walk", L"hide_hud", config.hide_hud);
+	config.hide_driver = read_bool(path, L"walk", L"hide_driver", config.hide_driver);
+	config.key_hint = read_bool(path, L"walk", L"key_hint", config.key_hint);
 	config.ignore_barriers = read_bool(path, L"walk", L"ignore_barriers", config.ignore_barriers);
 	config.trace_collision = read_bool(path, L"debug", L"trace_collision", config.trace_collision);
 	config.collision_census = read_bool(path, L"debug", L"collision_census", config.collision_census);
 	config.probe_key = read_bool(path, L"debug", L"probe_key", config.probe_key);
+	config.trace_input = read_bool(path, L"debug", L"trace_input", config.trace_input);
 
 	if (config.footstep_volume < 0.0f) {
 		config.footstep_volume = 0.0f;
