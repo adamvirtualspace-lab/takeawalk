@@ -7,7 +7,7 @@ Park, set the parking brake, press **F9**, and you are standing next to the driv
 door. Walk, run, crouch and jump anywhere you like, then come back to the door and
 press F9 again to get in.
 
-**Status:** version 0.17. First-person walking is complete. Third person is planned.
+**Status:** version 0.18. First-person walking is complete. Third person is planned.
 
 ## What you need
 
@@ -63,6 +63,9 @@ While you are on foot:
   brake. Esc, the function keys and the console still work.
 - The speedometer is hidden and the driver's seat is empty, both put back when you
   get in.
+- The game's developer mode is switched on, because the game only lets the walking
+  camera be used in that mode. It is put back as it was when you get in. You do not
+  need to change any game setting yourself.
 
 ## Settings
 
@@ -96,9 +99,9 @@ To use your own footstep sounds, replace the `footstepNN.ogg` files in the
 - The messages and the key reminder are drawn in a window on top of the game. They
   need the game to run in a window, borderless, or with Windows' full-screen
   optimisations, which is the usual case.
-- If you quit the game while on foot, the speedometer stays hidden in your settings
-  until the next start, when the plugin puts it back. Do not uninstall in between;
-  the uninstaller checks for this.
+- If you quit the game while on foot, the speedometer stays hidden and developer mode
+  stays on in your settings until the next start, when the plugin puts them back. Do
+  not uninstall in between; the uninstaller checks for this.
 - On slower computers there is a slight stutter while walking.
 
 ## Remove
@@ -116,6 +119,8 @@ The game's log says what the plugin did. Open
 - `walking NOT available on this game build` or lines starting `unable to hook`: the
   game version is not the one this release was made for.
 - F9 answers "Stop and set the parking brake before getting out": do that first.
+- "The game did not switch to the walking camera": the plugin could not get the view
+  out of the cab and called the walk off. Report it with the log lines.
 
 Please include the `takeawalk` lines from the log when reporting a problem.
 

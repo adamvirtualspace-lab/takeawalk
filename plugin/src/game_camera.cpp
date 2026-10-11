@@ -192,6 +192,17 @@ void camera_set(const placement_t &placement)
 	if (free_camera) {
 		memory::write(free_camera + CAMERA_PLACEMENT, placement);
 	}
+
+	// Asked for again every frame: the game drops the request while it is not in developer mode.
+
+	memory::write(camera_manager + MANAGER_TARGET_CAMERA, FREE_CAMERA_INDEX);
+}
+
+bool camera_shown(void)
+{
+	uint8_t *const camera_manager = manager();
+	uint32_t current = 0;
+	return taken && camera_manager && memory::read(camera_manager + MANAGER_CURRENT_CAMERA, current) && (current == FREE_CAMERA_INDEX);
 }
 
 void camera_release(void)

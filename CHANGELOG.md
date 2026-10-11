@@ -1,5 +1,15 @@
 # Changes
 
+## 0.18
+
+- **Fixed: F9 left you looking at the cab, unable to see where you walked.** The game
+  only switches to the walking camera in its developer mode, which players normally
+  have off; 0.17 was only ever tried with it on. The plugin now switches developer
+  mode on for the walk and puts it back afterwards.
+- If the game still does not give the camera, the walk is called off with a message
+  instead of leaving you walking blind.
+- F9 no longer reaches the game while you are on foot.
+
 ## 0.17 (first public release)
 
 For Euro Truck Simulator 2 1.61.1.1, Windows, 64-bit, single player.

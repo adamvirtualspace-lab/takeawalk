@@ -1,5 +1,7 @@
 /**
- * @brief Hides the driving HUD while on foot and puts it back afterwards.
+ * @brief Game settings which are changed while on foot and put back afterwards: the
+ * driving HUD is hidden, and developer mode is switched on, without which the game
+ * does not let the walker's camera be used.
  */
 
 #pragma once
@@ -12,6 +14,9 @@ namespace hud {
  */
 void recover(void);
 
+/**
+ * @brief Changes the settings for walking. Call before taking the camera.
+ */
 void hide(void);
 
 /**

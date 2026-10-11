@@ -56,6 +56,12 @@ bool camera_take(placement_t &reference);
 void camera_set(const placement_t &placement);
 
 /**
+ * @brief Whether the game is showing the free camera. It only switches to it in
+ * developer mode, and may take a frame to do so.
+ */
+bool camera_shown(void);
+
+/**
  * @brief Gives the camera back to the game and restores the previous view.
  */
 void camera_release(void);

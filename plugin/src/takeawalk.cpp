@@ -31,7 +31,7 @@
 #include "physics_trace.h"
 #include "sound.h"
 
-#define TAKEAWALK_VERSION "0.17"
+#define TAKEAWALK_VERSION "0.18"
 
 namespace {
 
@@ -43,6 +43,9 @@ const float ENTER_DISTANCE = 2.5f;
 // Holding the toggle key this long puts the walker back in the cab from anywhere (ms).
 // The way out when stuck or lost.
 const ULONGLONG FORCE_RETURN_HOLD_MS = 1500;
+
+// How long the game gets to switch to the walker's camera before the walk is called off (s).
+const float CAMERA_SWITCH_TIMEOUT = 1.0f;
 
 // How often the diagnostics count the static collision in the scene (ms).
 const ULONGLONG CENSUS_INTERVAL_MS = 5000;
@@ -185,6 +188,9 @@ struct walk_state_t
 
 	// Reminder of keys currently on screen, empty if none.
 	char                hint[128];
+
+	// Time the game has not been showing the walker's camera (s).
+	float               time_without_camera;
 };
 
 scs_log_t         game_log = NULL;
@@ -552,8 +558,12 @@ void keep_clear_of_walls(void)
 
 void start_walk(void)
 {
+	// The settings come first: the game only gives the camera in developer mode.
+
+	hud::hide();
 	game::placement_t reference;
 	if (! game::camera_take(reference)) {
+		hud::restore(false);
 		return;
 	}
 
@@ -585,8 +595,8 @@ void start_walk(void)
 	input::capture_start();
 	QueryPerformanceCounter(&walk.last_update);
 	walk.active = true;
+	walk.time_without_camera = 0.0f;
 	game::camera_set(walk.placement);
-	hud::hide();
 
 	game::driver_set_hidden(config.hide_driver);
 	log_message(SCS_LOG_TYPE_message, "on foot");
@@ -735,6 +745,14 @@ void update_walk(void)
 
 	update_hint(controllable);
 	game::camera_set(walk.placement);
+
+	// Without the camera the player would be walking blind, still looking at the cab.
+
+	walk.time_without_camera = (game_paused || game::camera_shown()) ? 0.0f : walk.time_without_camera + frame_time;
+	if (walk.time_without_camera > CAMERA_SWITCH_TIMEOUT) {
+		stop_walk(false);
+		refuse("The game did not switch to the walking camera. Take a Walk may not fit this game version.");
+	}
 }
 
 void on_toggle_pressed(void)

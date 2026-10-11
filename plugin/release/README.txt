@@ -48,6 +48,7 @@ GOOD TO KNOW
 - If something does not work, the game's log says why: search
   Documents\Euro Truck Simulator 2\game.log.txt for "takeawalk".
 - It changes nothing in your save. While you are on foot it hides the speedometer
-  and puts it back when you get in.
+  and switches the game's developer mode on (the walking camera needs it), and puts
+  both back when you get in.
 
 The README on GitHub has the full details.

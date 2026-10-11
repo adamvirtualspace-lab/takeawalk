@@ -83,7 +83,7 @@ if ($Uninstall) {
 		# The plugin puts them back the next time the game starts, so it has to stay for that.
 
 		Write-Host 'The game was last closed while you were on foot. Start the game once and quit it,'
-		Write-Host 'so that Take a Walk can put your speedometer and hint settings back, then run this again.'
+		Write-Host 'so that Take a Walk can put your game settings back, then run this again.'
 		exit 1
 	}
 	$removed = $false

@@ -311,6 +311,24 @@ against an exe on disk.
   counter-clockwise), pitch around +X is positive upward; quaternion = yaw * pitch.
 - Writing `requested = 0` works without `g_developer`.
 
+### The free camera needs developer mode **[verified in game, 2026-10-11]**
+
+Writing the free camera's index to the manager's target field only makes the game
+switch to it while `g_developer` is 1. With 0, the default, the request is ignored
+and the view stays where it was. Every test up to v0.17 ran with developer mode on in
+`config.cfg` (set early in the project), so this was missed, and v0.17 was released
+unable to leave the cab on a normal install: the plugin believed it was on foot while
+the player still saw the interior.
+
+Since v0.18 the plugin sets `g_developer 1` through the console when the walk starts
+and puts the previous value back when it ends, with the other settings it changes
+while on foot (`hud.cpp`, covered by the same restore file). Changing the variable at
+run time is enough; the camera switches on the next frame. It also asks for the camera
+again every frame, and calls the walk off if the game is not showing it after a
+second. `g_console` is not needed.
+
+Lesson for testing: check that the view left the cab, not only the log.
+
 ## 4d. Physics internals used for ground following
 
 Found by static analysis of the 1.61.1.1 exe with `tools/exe_analysis.py` (needs the

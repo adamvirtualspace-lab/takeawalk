@@ -40,6 +40,12 @@ bool           game_mouse_registered = false;
  */
 bool is_game_key(const WPARAM virtual_key)
 {
+	// F9 gets in and out, and in developer mode, which is on during a walk, the game has
+	// uses of its own for it.
+
+	if (virtual_key == VK_F9) {
+		return false;
+	}
 	return
 		(virtual_key == VK_ESCAPE) ||
 		(virtual_key == VK_OEM_3) ||
